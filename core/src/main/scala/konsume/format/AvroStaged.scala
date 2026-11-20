@@ -172,7 +172,7 @@ object AvroStaged:
             val root  = env.getOrElse(Nil, SVal.PathRef(Nil))
             val run = gen(program, root, Some(Nil)) { v =>
               if v eq root then '{ out += record; () }
-              else '{ out += record.copy(value = ${ json(v) }.noSpaces.getBytes(UTF_8)); () }
+              else '{ out += record.copy(value = ${ materialize(v) }.noSpaces.getBytes(UTF_8)); () }
             }
             '{
               $read
@@ -197,7 +197,7 @@ object AvroStaged:
       case PEnum(s, symbols)   => Choice(get[Int](s), symbols.map(sym => Static(Json.fromString(sym))))
       case PChoice(s, bs)      => Choice(get[Int](s), bs.map(sval(_, slots, bytes)))
       case PField(parent, n) =>
-        Dyn('{ Runtime.field(${ Gen.json(sval(parent, slots, bytes)) }, ${ Expr(n) }) })
+        Dyn('{ Runtime.field(${ Gen.materialize(sval(parent, slots, bytes)) }, ${ Expr(n) }) })
 
   private def instrs(
       is: List[Instr],

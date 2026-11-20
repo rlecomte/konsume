@@ -34,7 +34,7 @@ object Staged:
             ${
               gen(program, SVal.Dyn('value, isInput = true), None) {
                 case SVal.Dyn(_, true) => '{ out += record; () }
-                case v                 => '{ out += record.copy(value = ${ json(v) }); () }
+                case v                 => '{ out += record.copy(value = ${ materialize(v) }); () }
               }
             }
           catch case _: JqError => () // the record is skipped, outputs already emitted are kept

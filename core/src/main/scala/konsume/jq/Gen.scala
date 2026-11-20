@@ -125,7 +125,11 @@ private[konsume] object Gen:
 
   // ---------------------------------------------------------------------- value views
 
-  def json(v: SVal)(using c: Ctx)(using Quotes): Expr[Json] = v match
+  /** The code that builds `v` as a generic jq value (`io.circe.Json`), whatever the payload format.
+    * jq values are JSON values, so this is the fallback whenever `v` is handed to `Runtime`; each call
+    * gives up the specialized form (Avro slots, bytes in place) and usually allocates.
+    */
+  def materialize(v: SVal)(using c: Ctx)(using Quotes): Expr[Json] = v match
     case Static(j) if j.isNull        => '{ Json.Null }
     case Static(j) if j == Json.True  => '{ Json.True }
     case Static(j) if j == Json.False => '{ Json.False }
@@ -139,7 +143,7 @@ private[konsume] object Gen:
     case Dbl(e, true)                 => '{ Json.fromFloatOrNull($e.toFloat) }
     case Dbl(e, false)                => '{ Json.fromDoubleOrNull($e) }
     case Str(b, o, l)                 => '{ Json.fromString(String($b, $o, $l, UTF_8)) }
-    case Choice(i, bs)                => chooseGrouped(i, bs.map(b => (groupKey(b), json(b))))
+    case Choice(i, bs)                => chooseGrouped(i, bs.map(b => (groupKey(b), materialize(b))))
     case Fail(msg)                    => '{ throw JqError(${ Expr(msg) }) }
     case PathRef(p) =>
       c.recorder match
@@ -161,7 +165,7 @@ private[konsume] object Gen:
         case ts if ts.forall(_ == Left(true))  => Left(true)
         case ts if ts.forall(_ == Left(false)) => Left(false)
         case ts => Right(chooseGrouped(i, ts.map(t => (t.left.toOption, boolExpr(t)))))
-    case Dyn(_, _) | PathRef(_) => Right('{ Runtime.truthy(${ json(v) }) })
+    case Dyn(_, _) | PathRef(_) => Right('{ Runtime.truthy(${ materialize(v) }) })
 
   private def boolExpr(t: Either[Boolean, Expr[Boolean]])(using Quotes): Expr[Boolean] = t.fold(Expr(_), identity)
 
@@ -215,17 +219,17 @@ private[konsume] object Gen:
     case Jq.Literal(j) => k(Static(j))
     case Jq.Empty      => '{ () }
     case Jq.Not        => k(truthy(in).fold(b => Static(Runtime.bool(!b)), b => Bool('{ !$b })))
-    case Jq.Length     => k(Dyn('{ Runtime.length(${ json(in) }) }))
+    case Jq.Length     => k(Dyn('{ Runtime.length(${ materialize(in) }) }))
 
     case Jq.Field(t, name) =>
       pathOf(p, inPath) match
         case Some(path) if c.pathMode => k(c.env.getOrElse(path, PathRef(path)))
-        case _ => gen(t, in, inPath)(v => k(Dyn('{ Runtime.field(${ json(v) }, ${ Expr(name) }) })))
-    case Jq.Index(t, i) => gen(t, in, inPath)(v => k(Dyn('{ Runtime.index(${ json(v) }, ${ Expr(i) }) })))
+        case _ => gen(t, in, inPath)(v => k(Dyn('{ Runtime.field(${ materialize(v) }, ${ Expr(name) }) })))
+    case Jq.Index(t, i) => gen(t, in, inPath)(v => k(Dyn('{ Runtime.index(${ materialize(v) }, ${ Expr(i) }) })))
     case Jq.Iterate(t) =>
       gen(t, in, inPath) { v =>
         '{
-          val it = Runtime.iterate(${ json(v) })
+          val it = Runtime.iterate(${ materialize(v) })
           while it.hasNext do
             val x = it.next()
             ${ k(Dyn('x)) }
@@ -251,14 +255,14 @@ private[konsume] object Gen:
 
     case Jq.Test(Jq.Literal(j)) if j.isString =>
       val re = c.consts.regexes(j.asString.get)
-      k(Bool('{ Runtime.test(${ json(in) }, $re) }))
+      k(Bool('{ Runtime.test(${ materialize(in) }, $re) }))
     case Jq.Test(re) =>
-      gen(re, in, inPath)(rv => k(Bool('{ Runtime.test(${ json(in) }, Runtime.compileRegex(${ json(rv) })) })))
+      gen(re, in, inPath)(rv => k(Bool('{ Runtime.test(${ materialize(in) }, Runtime.compileRegex(${ materialize(rv) })) })))
 
     case Jq.StartsWith(prefix) =>
-      gen(prefix, in, inPath)(pv => k(Bool('{ Runtime.startsWith(${ json(in) }, ${ json(pv) }) })))
+      gen(prefix, in, inPath)(pv => k(Bool('{ Runtime.startsWith(${ materialize(in) }, ${ materialize(pv) }) })))
     case Jq.EndsWith(suffix) =>
-      gen(suffix, in, inPath)(sv => k(Bool('{ Runtime.endsWith(${ json(in) }, ${ json(sv) }) })))
+      gen(suffix, in, inPath)(sv => k(Bool('{ Runtime.endsWith(${ materialize(in) }, ${ materialize(sv) }) })))
 
   /** `l and r` (shortCircuitOn = false) / `l or r` (shortCircuitOn = true). */
   private def logical(l: Jq, r: Jq, in: SVal, inPath: Option[Path], shortCircuitOn: Boolean)(k: K)(using
@@ -290,7 +294,7 @@ private[konsume] object Gen:
   private def withLocalK(k: K)(body: K => Expr[Unit])(using Ctx, Quotes): Expr[Unit] =
     '{
       def localK(x: Json): Unit = ${ k(Dyn('x)) }
-      ${ body(v => share(v)(sv => '{ localK(${ json(sv) }) })) }
+      ${ body(v => share(v)(sv => '{ localK(${ materialize(sv) }) })) }
     }
 
   /** Does `p` produce exactly one output, whatever its input? */
@@ -365,7 +369,7 @@ private[konsume] object Gen:
       // a boolean against another type: the type order decides, statically
       staticCmp(op, Runtime.TrueRank, y)
 
-    case _ => Bool(test(op, '{ Runtime.compare(${ json(a) }, ${ json(b) }) }))
+    case _ => Bool(test(op, '{ Runtime.compare(${ materialize(a) }, ${ materialize(b) }) }))
 
   /** One boolean per branch of a choice. */
   private def combine(i: Expr[Int], results: Vector[SVal])(using Ctx, Quotes): SVal =
@@ -410,10 +414,10 @@ private[konsume] object Gen:
         case _         => test(op, '{ Integer.compare(Runtime.rank($x), ${ Expr(Runtime.NullRank) }) })
     else if y.isBoolean then
       op match
-        case CmpOp.Eq  => '{ $x == ${ json(Static(y)) } }
-        case CmpOp.Neq => '{ $x != ${ json(Static(y)) } }
+        case CmpOp.Eq  => '{ $x == ${ materialize(Static(y)) } }
+        case CmpOp.Neq => '{ $x != ${ materialize(Static(y)) } }
         case _         => test(op, '{ Integer.compare(Runtime.rank($x), ${ Expr(Runtime.rank(y)) }) })
-    else test(op, '{ Runtime.compare($x, ${ json(Static(y)) }) })
+    else test(op, '{ Runtime.compare($x, ${ materialize(Static(y)) }) })
 
   /** The comparison operator is known at staging time: no dispatch at runtime. */
   private def test(op: CmpOp, cmp: Expr[Int])(using Quotes): Expr[Boolean] = op match

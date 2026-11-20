@@ -76,7 +76,7 @@ object JsonStaged:
             val input = env.getOrElse(Nil, SVal.PathRef(Nil))
             val run = gen(program, input, Some(Nil)) { v =>
               if v eq input then '{ out += record; () }
-              else '{ out += record.copy(value = ${ json(v) }.noSpaces.getBytes(UTF_8)); () }
+              else '{ out += record.copy(value = ${ materialize(v) }.noSpaces.getBytes(UTF_8)); () }
             }
             '{
               $scan
