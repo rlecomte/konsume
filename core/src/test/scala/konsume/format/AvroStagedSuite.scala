@@ -29,24 +29,26 @@ class AvroStagedSuite extends munit.FunSuite:
       .fold(e => fail(s"$program: $e"), identity)(batch)
       .toVector
     val expected = run(Engine.Interpreted)
-    val actual   = run(Engine.Staged)
-    def describe(rs: Vector[Record[String, Array[Byte]]]) =
-      rs.map(r => if batch.exists(_.value eq r.value) then s"#${r.offset} (original)" else s"#${r.offset} ${String(r.value, UTF_8)}")
-    val clue =
-      s"""program: $program
-         |schema: $schema
-         |expected: ${describe(expected).mkString(", ")}
-         |actual:   ${describe(actual).mkString(", ")}""".stripMargin
-    assertEquals(actual.size, expected.size, clue)
-    actual.zip(expected).foreach { (a, e) =>
-      assertEquals(a.offset, e.offset, clue)
-      val aOriginal = batch.exists(_.value eq a.value)
-      val eOriginal = batch.exists(_.value eq e.value)
-      assertEquals(aOriginal, eOriginal, clue)
-      if !aOriginal then
-        val (aj, ej) = (parse(String(a.value, UTF_8)).toOption.get, parse(String(e.value, UTF_8)).toOption.get)
-        assert(Runtime.compare(aj, ej) == 0, clue)
-    }
+    for engine <- List(Engine.Staged, Engine.Planned) do
+      val actual = run(engine)
+      def describe(rs: Vector[Record[String, Array[Byte]]]) =
+        rs.map(r => if batch.exists(_.value eq r.value) then s"#${r.offset} (original)" else s"#${r.offset} ${String(r.value, UTF_8)}")
+      val clue =
+        s"""engine: $engine
+           |program: $program
+           |schema: $schema
+           |expected: ${describe(expected).mkString(", ")}
+           |actual:   ${describe(actual).mkString(", ")}""".stripMargin
+      assertEquals(actual.size, expected.size, clue)
+      actual.zip(expected).foreach { (a, e) =>
+        assertEquals(a.offset, e.offset, clue)
+        val aOriginal = batch.exists(_.value eq a.value)
+        val eOriginal = batch.exists(_.value eq e.value)
+        assertEquals(aOriginal, eOriginal, clue)
+        if !aOriginal then
+          val (aj, ej) = (parse(String(a.value, UTF_8)).toOption.get, parse(String(e.value, UTF_8)).toOption.get)
+          assert(Runtime.compare(aj, ej) == 0, clue)
+      }
 
   private def randomCase(seed: Int) =
     val gen    = Gen(Random(seed))
@@ -87,6 +89,7 @@ class AvroStagedSuite extends munit.FunSuite:
         .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some(program), engine), Map(1 -> schema).get)
         .toOption.get(batch).map(r => (r.offset, String(r.value, UTF_8))).toVector
       assertEquals(run(Engine.Staged), run(Engine.Interpreted), program)
+      assertEquals(run(Engine.Planned), run(Engine.Interpreted), program)
   }
 
   test("truncated and corrupted payloads are skipped") {
@@ -99,10 +102,11 @@ class AvroStagedSuite extends munit.FunSuite:
       Confluent.frame(1, Array[Byte](0x7f, 1, 2)),     // string length 63 > remaining
       Confluent.frame(1, Array[Byte](0xff.toByte))     // unterminated varint
     ).zipWithIndex.map((v, i) => Record("t", 0, i.toLong, 0L, "k", v))
-    val out = Pipeline
-      .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some("select(.i == 42)")), Map(1 -> schema).get)
-      .toOption.get(batch)
-    assertEquals(out.map(_.offset).toVector, Vector(0L))
+    for engine <- List(Engine.Staged, Engine.Planned) do
+      val out = Pipeline
+        .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some("select(.i == 42)"), engine), Map(1 -> schema).get)
+        .toOption.get(batch)
+      assertEquals(out.map(_.offset).toVector, Vector(0L), engine)
   }
 
   /** Random schemas, data and programs. Field names come from a small pool, so that programs

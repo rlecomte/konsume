@@ -38,7 +38,7 @@ object AvroStaged:
 
   // --------------------------------------------------------------------------- reading plan
 
-  private enum Instr:
+  private[format] enum Instr:
     case ReadLong(slot: Int)
     case ReadFloat(slot: Int)
     case ReadDouble(slot: Int)
@@ -50,7 +50,7 @@ object AvroStaged:
     case Branch(index: Int, branches: Vector[List[Instr]])
 
   /** Where the value of a path will be, once read. */
-  private enum PVal:
+  private[format] enum PVal:
     case PStatic(value: Json)
     case PLong(slot: Int)
     case PDouble(slot: Int, isFloat: Boolean)
@@ -64,7 +64,7 @@ object AvroStaged:
 
   import Instr.*, PVal.*
 
-  private final class Planner(schemas: ArrayBuffer[Schema]):
+  private[format] final class Planner(schemas: ArrayBuffer[Schema]):
     val slots = ArrayBuffer.empty[SlotType]
 
     private def slot(t: SlotType): Int =

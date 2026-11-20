@@ -1,6 +1,6 @@
 package konsume.bench
 
-import konsume.format.{AvroStaged, JsonStaged}
+import konsume.format.{AvroPlanned, AvroStaged, JsonStaged}
 import konsume.jq.{Jq, Parser}
 import org.openjdk.jmh.annotations.*
 
@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 @Fork(5)
 class CompilationCurveBench:
 
-  @Param(Array("json", "avro"))
+  @Param(Array("json", "avro", "avroPlanned"))
   var format: String = scala.compiletime.uninitialized
 
   private var programs: Array[Jq] = scala.compiletime.uninitialized
@@ -34,7 +34,10 @@ class CompilationCurveBench:
   def compile(): AnyRef =
     val program = programs(next)
     next += 1
-    if format == "json" then JsonStaged.compile(program) else AvroStaged.compile(program, BenchData.schema)
+    format match
+      case "json"        => JsonStaged.compile(program)
+      case "avro"        => AvroStaged.compile(program, BenchData.schema)
+      case "avroPlanned" => AvroPlanned.compile(program, BenchData.schema)
 
 object CompilationCurveBench:
   /** Different shapes, and a different literal in each, so that no two programs are equal. */
