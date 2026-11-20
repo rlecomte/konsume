@@ -6,7 +6,6 @@ import konsume.format.Plan.*
 import konsume.jq.{Gen, Jq, JqError, StagingCompiler}
 
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable.ArrayBuffer
 import scala.quoted.*
 
@@ -28,9 +27,7 @@ object JsonStaged:
 
   type Fn = (Record[Any, Array[Byte]], ArrayBuffer[Record[Any, Array[Byte]]]) => Unit
 
-  private val cache = ConcurrentHashMap[Jq, Fn]()
-
-  def compile(program: Jq): Fn = cache.computeIfAbsent(program, p => StagingCompiler.run(code(p)))
+  def compile(program: Jq): Fn = StagingCompiler.run(code(program))
 
   /** The generated code, for debugging. */
   def show(program: Jq): String = StagingCompiler.show(code(program))

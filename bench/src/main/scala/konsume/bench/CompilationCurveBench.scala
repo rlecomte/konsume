@@ -7,8 +7,7 @@ import org.openjdk.jmh.annotations.*
 import java.util.concurrent.TimeUnit
 
 /** How long the N-th staged compilation takes after the JVM starts, as when users submit
-  * their own filters: every invocation compiles a program never seen before, so the caches of
-  * the compiled programs never hit. Each measured iteration is one compilation, there is no
+  * their own filters: every invocation compiles a program never seen before. Each measured iteration is one compilation, there is no
   * warmup: iteration N of a fork is the N-th compilation of a fresh JVM.
   *
   * Summarize with `bench/scripts/compilation_curve.py`.

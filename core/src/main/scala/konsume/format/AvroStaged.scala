@@ -8,7 +8,6 @@ import org.apache.avro.Schema
 import org.apache.avro.Schema.Type.*
 
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters.*
 import scala.quoted.*
@@ -30,15 +29,10 @@ object AvroStaged:
 
   type Fn = (Record[Any, Array[Byte]], ArrayBuffer[Record[Any, Array[Byte]]]) => Unit
 
-  private val cache = ConcurrentHashMap[(Jq, Schema), Fn]()
-
-  def compile(program: Jq, schema: Schema): Fn =
-    cache.computeIfAbsent((program, schema), _ => build(program, schema))
-
   /** The generated code, for debugging. */
   def show(program: Jq, schema: Schema): String = StagingCompiler.show(code(program, schema, ArrayBuffer.empty))
 
-  private def build(program: Jq, schema: Schema): Fn =
+  def compile(program: Jq, schema: Schema): Fn =
     val schemas = ArrayBuffer.empty[Schema]
     StagingCompiler.run(code(program, schema, schemas))(schemas.toArray)
 

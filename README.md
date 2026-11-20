@@ -82,7 +82,8 @@ Known limits of the staged decoders:
   which would then stay interpreted: not handled yet.
 
 The first staging compilation takes about a second (the compiler warms up), later ones tens of
-milliseconds; compiled programs are cached. Anything running staged code must fork the JVM
+milliseconds. Each pipeline compiles its program once (for Avro, once per writer schema id, on
+first sight), nothing is shared between pipelines; compilations are serialized. Anything running staged code must fork the JVM
 (`fork := true`), because the staging compiler reads its classpath from `java.class.path`.
 
 ## Benchmark
