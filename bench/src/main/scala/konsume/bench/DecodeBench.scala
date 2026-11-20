@@ -12,7 +12,7 @@ import org.openjdk.jmh.infra.Blackhole
 import java.util.concurrent.TimeUnit
 
 /** Where does the time go, from Kafka bytes to filtered records?
-  * `select(.user.age > 30 and .user.country == "FR")` on 10k records, staged.
+  * `select(.user.age > 30 and .user.country == "FR")` on 10k records.
   */
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -42,7 +42,7 @@ class DecodeBench:
     full = Pipeline
       .forBytes[String](ConsumeConfig(Seq("topic"), payloadFormat, Some(program)), Map(BenchData.SchemaId -> BenchData.schema).get)
       .fold(throw _, identity)
-    filterOnly = Pipeline.staged(Parser.parse(program).fold(throw _, identity))
+    filterOnly = Pipeline.interpreted(Parser.parse(program).fold(throw _, identity))
     reference = Pipeline.decodeThen(decoder, filterOnly)
     // a fast pipeline that drops everything would be a fine benchmark of nothing
     val (got, expected) = (full(bytes).map(_.offset).toVector, reference(bytes).map(_.offset).toVector)
@@ -55,7 +55,7 @@ class DecodeBench:
   /** bytes => filtered records, as the library does it (Avro: staged decoder). */
   @Benchmark def bytesToFiltered(bh: Blackhole): Unit = bh.consume(full(bytes))
 
-  /** bytes => filtered records, decoding to JSON first (circe / Apache Avro), then staged filter. */
+  /** bytes => filtered records, decoding to JSON first (circe / Apache Avro), then interpreted filter. */
   @Benchmark def bytesToFilteredViaJson(bh: Blackhole): Unit = bh.consume(reference(bytes))
 
   /** bytes => JSON view, nothing else. */
@@ -63,7 +63,7 @@ class DecodeBench:
     val it = bytes.iterator
     while it.hasNext do bh.consume(decoder.decode(it.next().value))
 
-  /** Only the staged filter, on values decoded beforehand. */
+  /** Only the interpreted filter, on values decoded beforehand. */
   @Benchmark def filterDecoded(bh: Blackhole): Unit = bh.consume(filterOnly(BenchData.jsonValues))
 
   /** Avro only: bytes => GenericRecord, without the conversion to JSON. */

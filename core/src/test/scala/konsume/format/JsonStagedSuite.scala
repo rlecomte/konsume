@@ -2,7 +2,7 @@ package konsume.format
 
 import io.circe.Json
 import io.circe.parser.parse
-import konsume.jq.{Corpus, Runtime}
+import konsume.jq.{Corpus, Parser, Runtime}
 import konsume.{ConsumeConfig, Engine, PayloadFormat, Pipeline, Record}
 
 import java.nio.charset.StandardCharsets.UTF_8
@@ -83,6 +83,11 @@ class JsonStagedSuite extends munit.FunSuite:
     "select(.skip)", ".user.age.x"
   )
 
+  test("corpus documents, every corpus program") {
+    val batch = records(Corpus.inputs.map(_.noSpaces))
+    programs.foreach(check(_, batch))
+  }
+
   test("tricky documents, every corpus program") {
     val batch = records(tricky)
     programs.foreach(check(_, batch))
@@ -146,4 +151,11 @@ class JsonStagedSuite extends munit.FunSuite:
         case 6 => s"$path == $path"
         case _ => s"select($path != null) | $path[]"
       check(program, batch)
+  }
+
+  test("generated code is specialised") {
+    val code = JsonStaged.show(Parser.parse("""select(.age > 30 and .name | test("^jo"))""").toOption.get)
+    assert(code.contains("Pattern.compile(\"^jo\")"), code)
+    assert(code.contains("30.0"), code)
+    assert(!code.contains("Interpreter"), code)
   }

@@ -1,8 +1,8 @@
 package konsume.bench
 
 import io.circe.Json
-import konsume.jq.Parser
-import konsume.{Pipeline, Record}
+import konsume.format.JsonDecoder
+import konsume.{ConsumeConfig, Engine, PayloadFormat, Pipeline, Record}
 import org.openjdk.jmh.annotations.*
 import org.openjdk.jmh.infra.Blackhole
 
@@ -10,8 +10,9 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import scala.collection.mutable.ArrayBuffer
 
-/** One batch of 10k already-deserialised records through the same jq program, three ways:
-  * written by hand at compile time, interpreted, staged.
+/** One batch of 10k JSON payloads (bytes) through the same jq program, three ways: decoded
+  * with circe then filtered by code written by hand at compile time, decoded with circe then
+  * interpreted, staged (bytes read directly).
   */
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -24,26 +25,29 @@ class JqBench:
   @Param(Array("filter", "regex", "iterate"))
   var program: String = scala.compiletime.uninitialized
 
-  private var batch: Vector[Record[String, Json]]                        = scala.compiletime.uninitialized
-  private var staged: Pipeline[String, Json, String, Json]               = scala.compiletime.uninitialized
-  private var interpreted: Pipeline[String, Json, String, Json]          = scala.compiletime.uninitialized
-  private var handwritten: Iterable[Record[String, Json]] => Iterable[Record[String, Json]] =
-    scala.compiletime.uninitialized
+  private type P = Pipeline[String, Array[Byte], String, Array[Byte]]
+
+  private var batch: Vector[Record[String, Array[Byte]]] = scala.compiletime.uninitialized
+  private var staged: P                                  = scala.compiletime.uninitialized
+  private var interpreted: P                             = scala.compiletime.uninitialized
+  private var handwritten: P                             = scala.compiletime.uninitialized
 
   @Setup
   def setup(): Unit =
-    batch = BenchData.jsonValues
+    batch = BenchData.jsonBytes
     val source = program match
       case "filter"  => """select(.user.age > 30 and .user.country == "FR")"""
       case "regex"   => """select(.name | test("^jo"))"""
       case "iterate" => ".items[] | select(. > 50)"
-    val ast = Parser.parse(source).fold(throw _, identity)
-    staged = Pipeline.staged(ast)
-    interpreted = Pipeline.interpreted(ast)
-    handwritten = program match
+    def pipeline(engine: Engine): P =
+      Pipeline.forBytes[String](ConsumeConfig(Seq("topic"), PayloadFormat.Json, Some(source), engine)).fold(throw _, identity)
+    staged = pipeline(Engine.Staged)
+    interpreted = pipeline(Engine.Interpreted)
+    val f = program match
       case "filter"  => Handwritten.filter
       case "regex"   => Handwritten.regex
       case "iterate" => Handwritten.iterate
+    handwritten = Pipeline.decodeThen(JsonDecoder, b => f(b))
 
   @Benchmark def handwrittenScala(bh: Blackhole): Unit = bh.consume(handwritten(batch))
   @Benchmark def stagedJq(bh: Blackhole): Unit         = bh.consume(staged(batch))

@@ -7,16 +7,8 @@ Scala 3 library to consume Kafka topics, with record processing configured at ru
 For now only the pure part exists: `Pipeline[K, V, K2, V2]`, a function from a batch of records
 (`Iterable[Record[K, V]]`, what a `poll` returns) to the records to emit.
 
-```scala
-val pipeline = Pipeline
-  .fromConfig[String](ConsumeConfig(Seq("users"), jq = Some("""select(.age > 30 and .country == "FR")""")))
-  .fold(throw _, identity)
-
-val out: Iterable[Record[String, Json]] = pipeline(batch)
-```
-
-On raw Kafka values (`Array[Byte]`), JSON or Avro (Confluent wire format, writer schemas from a
-registry):
+It works on raw Kafka values (`Array[Byte]`), JSON or Avro (Confluent wire format, writer schemas
+from a registry):
 
 ```scala
 val pipeline = Pipeline
@@ -55,8 +47,8 @@ from an older schema is `null`.
 
 - `jq/Parser`: jq subset → `Jq` AST.
 - `jq/Interpreter`: tree-walking interpreter, the reference semantics (`Engine.Interpreted`).
-- `jq/Staged`: generates the Scala code for this very program, compiles it with the staging
-  compiler and loads it (`Engine.Staged`, the default). Continuations are inlined at staging time
+- `jq/Gen`: generates the Scala code for this very program, shared by the staged decoders below,
+  which compile it with the staging compiler and load it (`Engine.Staged`, the default). Continuations are inlined at staging time
   (CPS), so the program is fused into the loop over the batch: no AST, no closures, comparisons
   specialised on the literal type, booleans never boxed into `Json`, literals and regexes built
   once, constant folding, records kept by a filter are not copied.
@@ -76,10 +68,8 @@ from an older schema is `null`.
   (most fold to constants by jq's type order). The whole payload is read and validated (the tests
   check it is rejected exactly when circe rejects it); duplicate keys: the last one wins, as in jq.
 
-See the generated code: `sbt 'core/Test/runMain konsume.jq.showStaged "select(.age > 30)"'`, or
-for Avro `sbt 'core/Test/runMain konsume.format.showAvroStaged schema.avsc "select(.age > 30)"'`.
-
-For JSON: `sbt 'core/Test/runMain konsume.format.showJsonStaged "select(.age > 30)"'`.
+See the generated code: `sbt 'core/Test/runMain konsume.format.showJsonStaged "select(.age > 30)"'`,
+or for Avro `sbt 'core/Test/runMain konsume.format.showAvroStaged schema.avsc "select(.age > 30)"'`.
 
 Known limits of the staged decoders:
 - Avro: reading stops after the last field the program needs, so a payload corrupted or

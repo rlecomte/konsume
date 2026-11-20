@@ -2,7 +2,7 @@ package konsume
 
 import io.circe.Json
 import konsume.format.{AvroDecoder, AvroStaged, Confluent, DecodeError, Decoder, JsonDecoder, JsonStaged}
-import konsume.jq.{Interpreter, Jq, JqError, ParseError, Parser, Staged}
+import konsume.jq.{Interpreter, Jq, JqError, ParseError, Parser}
 import org.apache.avro.Schema
 
 import java.nio.charset.StandardCharsets.UTF_8
@@ -40,16 +40,6 @@ object Pipeline:
 
   def identity[K, V]: Pipeline[K, V, K, V] = batch => batch
 
-  def fromConfig[K](config: ConsumeConfig): Either[ParseError, Pipeline[K, Json, K, Json]] =
-    config.jq match
-      case None => Right(identity)
-      case Some(source) =>
-        Parser.parse(source).map { program =>
-          config.engine match
-            case Engine.Staged      => staged(program)
-            case Engine.Interpreted => interpreted(program)
-        }
-
   /** The pipeline on raw Kafka values.
     *
     * Values are seen through their JSON view by the jq program. A record the program keeps
@@ -73,11 +63,11 @@ object Pipeline:
           (config.valueFormat, config.engine) match
             case (PayloadFormat.Avro, Engine.Staged) => avroStaged(program, schemas)
             case (PayloadFormat.Json, Engine.Staged) => jsonStaged(program)
-            case (format, engine) =>
+            case (format, Engine.Interpreted) =>
               val decoder: Decoder = format match
                 case PayloadFormat.Json => JsonDecoder
                 case PayloadFormat.Avro => AvroDecoder(schemas)
-              decodeThen(decoder, if engine == Engine.Staged then staged(program) else interpreted(program))
+              decodeThen(decoder, interpreted(program))
         }
 
   /** Decodes each value to JSON, then runs `jq` on it. */
@@ -125,14 +115,6 @@ object Pipeline:
       }
       // The generated code only knows Record[Any, _]: it copies keys, never looks at them.
       out.asInstanceOf[ArrayBuffer[Record[K, Array[Byte]]]]
-
-  private val compiled = ConcurrentHashMap[Jq, Staged.Batch]()
-
-  def staged[K](program: Jq): Pipeline[K, Json, K, Json] =
-    val f = compiled.computeIfAbsent(program, Staged.compile)
-    // The generated code only knows Record[Any, Json]: it never looks at the key, and only
-    // ever copies it from the input record to the output one, so the cast is safe.
-    batch => f(batch).asInstanceOf[Iterable[Record[K, Json]]]
 
   def interpreted[K](program: Jq): Pipeline[K, Json, K, Json] = batch =>
     val out = ArrayBuffer.empty[Record[K, Json]]

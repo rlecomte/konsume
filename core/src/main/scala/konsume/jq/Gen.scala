@@ -28,8 +28,7 @@ private[konsume] object Gen:
   enum SVal:
     case Static(value: Json)
     case Bool(code: Expr[Boolean])
-    /** `isInput`: this is the record's value itself, so emitting it does not copy the record. */
-    case Dyn(code: Expr[Json], isInput: Boolean = false)
+    case Dyn(code: Expr[Json])
     /** an integer (Avro int or long) */
     case Num(code: Expr[Long])
     /** an Avro float or double: NaN and infinities are `null` in the JSON view */
@@ -145,7 +144,7 @@ private[konsume] object Gen:
     case Static(j) if j == Json.False => '{ Json.False }
     case Static(j)                    => c.consts.json.getOrElse(j, liftJson(j))
     case Bool(b)                      => '{ if $b then Json.True else Json.False }
-    case Dyn(e, _)                    => e
+    case Dyn(e)                       => e
     case Num(e)                       => '{ Json.fromLong($e) }
     case Number(_, j)                 => j
     case Text(e)                      => '{ Json.fromString($e) }
@@ -175,7 +174,7 @@ private[konsume] object Gen:
         case ts if ts.forall(_ == Left(true))  => Left(true)
         case ts if ts.forall(_ == Left(false)) => Left(false)
         case ts => Right(chooseGrouped(i, ts.map(t => (t.left.toOption, boolExpr(t)))))
-    case Dyn(_, _) | PathRef(_) => Right('{ Runtime.truthy(${ materialize(v) }) })
+    case Dyn(_) | PathRef(_)    => Right('{ Runtime.truthy(${ materialize(v) }) })
 
   private def boolExpr(t: Either[Boolean, Expr[Boolean]])(using Quotes): Expr[Boolean] = t.fold(Expr(_), identity)
 
@@ -324,7 +323,7 @@ private[konsume] object Gen:
     case (Choice(i, bs), _)     => combine(i, bs.map(compare(op, _, b)))
     case (_, Choice(i, bs))     => combine(i, bs.map(compare(op, a, _)))
     case (Static(_), _)         => compare(op.flip, b, a)
-    case (Dyn(x, _), Static(y)) => Bool(compareWithLiteral(op, x, y))
+    case (Dyn(x), Static(y))    => Bool(compareWithLiteral(op, x, y))
 
     case (Number(x, _), Static(y)) =>
       if y.isNumber then Bool(test(op, '{ Runtime.compareDoubles($x, ${ Expr(y.asNumber.get.toDouble) }) }))
@@ -446,11 +445,11 @@ private[konsume] object Gen:
   def share(v: SVal)(k: K)(using Quotes): Expr[Unit] = v match
     // made of references, or of code evaluated only if and when needed
     case Static(_) | Fail(_) | PathRef(_) | Choice(_, _) | Str(_, _, _) | Number(_, _) | Text(_) | Opaque(_, _) => k(v)
-    case Dyn(e, _) if isRef(e)    => k(v)
+    case Dyn(e) if isRef(e)       => k(v)
     case Bool(e) if isRef(e)      => k(v)
     case Num(e) if isRef(e)       => k(v)
     case Dbl(e, _) if isRef(e)    => k(v)
-    case Dyn(e, isInput)          => '{ val x = $e; ${ k(Dyn('x, isInput)) } }
+    case Dyn(e)                   => '{ val x = $e; ${ k(Dyn('x)) } }
     case Bool(e)                  => '{ val b = $e; ${ k(Bool('b)) } }
     case Num(e)                   => '{ val n = $e; ${ k(Num('n)) } }
     case Dbl(e, f)                => '{ val d = $e; ${ k(Dbl('d, f)) } }
