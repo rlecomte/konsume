@@ -1,8 +1,8 @@
 # konsume
 
 Scala 3 library to consume Kafka topics, with record processing configured at runtime
-(a jq program for now) and compiled to bytecode at runtime with
-[multi-stage programming](https://docs.scala-lang.org/scala3/reference/metaprogramming/staging.html).
+(a jq program for now). For Avro, the program reads only the fields it uses, straight from the
+bytes, without decoding the record.
 
 For now only the pure part exists: `Pipeline[K, V, K2, V2]`, a function from a batch of records
 (`Iterable[Record[K, V]]`, what a `poll` returns) to the records to emit.
@@ -46,64 +46,41 @@ from an older schema is `null`.
 ## How it works
 
 - `jq/Parser`: jq subset → `Jq` AST.
-- `jq/Interpreter`: tree-walking interpreter, the reference semantics (`Engine.Interpreted`).
-- `jq/Gen`: generates the Scala code for this very program, shared by the staged decoders below,
-  which compile it with the staging compiler and load it (`Engine.Staged`, the default). Continuations are inlined at staging time
-  (CPS), so the program is fused into the loop over the batch: no AST, no closures, comparisons
-  specialised on the literal type, booleans never boxed into `Json`, literals and regexes built
-  once, constant folding, records kept by a filter are not copied.
-- `jq/Runtime`: jq semantics shared by both.
-- `format/AvroStaged`: for Avro, the staged code reads the bytes directly, for each writer schema.
-  The program is first generated in recording mode to find the paths it uses (`.user.age`); a
-  reading plan is derived from the writer schema (fields in schema order, the needed ones into
-  typed local variables, the others skipped without being decoded, stop after the last needed
-  one); then the program is generated on these variables. Strings are compared as UTF-8 bytes in
-  place, union branches that cannot match are folded away. Values used as a whole (records,
-  arrays, maps, bytes) are read into their JSON view. One compilation per (program, schema id),
-  on first sight of the id.
-- `format/JsonStaged`: the same for JSON. Keys come in any order, so each object of interest is
-  scanned and its keys compared as bytes with the expected names; the values of the others are
-  skipped without being decoded. Types are only known at runtime: a used value is kept as its kind
-  plus a double, or its position in the payload, and comparisons are generated for every kind
-  (most fold to constants by jq's type order). The whole payload is read and validated (the tests
-  check it is rejected exactly when circe rejects it); duplicate keys: the last one wins, as in jq.
+- `jq/Interpreter`: tree-walking interpreter, the reference semantics (`Engine.Interpreted`, and
+  JSON payloads for now).
+- `jq/Runtime`: jq semantics shared by both engines.
+- `format/AvroPlan`: for one Avro writer schema and the paths a program uses (`.user.age`), the
+  reading plan: fields in schema order, the needed ones into typed slots (a `long`, a `double`,
+  the offset and length of a UTF-8 string, a union index...), the others skipped without being
+  decoded, stop after the last needed one. Values used as a whole (records, arrays, maps, bytes)
+  are read into their JSON view.
+- `format/AvroPlanned` (`Engine.Planned`, the default): finds the paths on the program's syntax
+  tree, runs the plan with a small interpreter, and turns the program into closures once, with
+  comparisons specialised on the slot type (strings compared as UTF-8 bytes in place, `startswith`
+  and `endswith` too, union branches resolved by their index). One frame per thread, reused:
+  running a program allocates nothing of its own. One program per writer schema id, built on
+  first sight of the id, in well under a millisecond.
 
-See the generated code: `sbt 'core/Test/runMain konsume.format.showJsonStaged "select(.age > 30)"'`,
-or for Avro `sbt 'core/Test/runMain konsume.format.showAvroStaged schema.avsc "select(.age > 30)"'`.
-
-Known limits of the staged decoders:
+Known limits:
 - Avro: reading stops after the last field the program needs, so a payload corrupted or
   truncated after that point is accepted (the reference decoder rejects it);
-- JSON: invalid UTF-8 is not detected, and strings are compared as bytes when they have no
-  escapes, so the result on invalid UTF-8 may differ from the reference;
-- the first record of a new schema id waits for its compilation (tens of ms, ~1s for the very
-  first one); compiling in the background meanwhile is not done yet;
-- very large schemas could generate methods over the JIT's size limit (8000 bytes of bytecode),
-  which would then stay interpreted: not handled yet.
+- JSON payloads are decoded with circe then interpreted: a planned engine for JSON is not done.
 
-The first staging compilation takes about a second (the compiler warms up), later ones tens of
-milliseconds. Each pipeline compiles its program once (for Avro, once per writer schema id, on
-first sight), nothing is shared between pipelines; compilations are serialized. Anything running staged code must fork the JVM
-(`fork := true`), because the staging compiler reads its classpath from `java.class.path`.
+An earlier version compiled the program to bytecode at runtime (Scala 3 staging): about 2x
+faster, but with a compiler in memory and a heap leak. What was measured and learnt:
+[docs/staged-engine.md](docs/staged-engine.md).
 
 ## Benchmark
 
-`sbt 'bench/Jmh/run -prof gc'`: 10k records already deserialised, JDK 25, µs per batch (lower is better).
+`sbt 'bench/Jmh/run -prof gc konsume.bench.AvroEnginesBench'`: 10k Avro records (~19 bytes), JDK
+25, µs per batch (bytes allocated per record).
 
-| program                                            | hand-written | staged | interpreted |
-|----------------------------------------------------|-------------:|-------:|------------:|
-| `select(.user.age > 30 and .user.country == "FR")` |          238 |    286 |         846 |
-| `select(.name \| test("^jo"))`                     |          268 |    272 |         865 |
-| `.items[] \| select(. > 50)`                       |          456 |    379 |         908 |
+| program                                            | planned        | interpreted     |
+|----------------------------------------------------|---------------:|----------------:|
+| `select(.user.age > 30 and .user.country == "FR")` | **348** (1.6)  | 3 047 (2 139)   |
+| `select(.name \| test("^jo"))`                     | **464** (220)  | 3 507 (2 702)   |
+| `.user.country`                                    | **561** (265)  | 2 888 (2 268)   |
+| `.items[] \| select(. > 50)`                       | **940** (493)  | 3 501 (2 488)   |
 
-`sbt 'bench/Jmh/run -prof gc konsume.bench.DecodeBench'`: from Kafka bytes, same filter,
-10k records (~65 bytes in JSON, ~19 in Avro), µs per batch (allocation per batch).
-
-| bytes => filtered records                 |            JSON |            Avro |
-|--------------------------------------------|----------------:|----------------:|
-| decoded to JSON first, then staged filter  | 3 060 (17.4 MB) | 3 166 (20.7 MB) |
-| staged decoder on the bytes                | **1 053 (416 KB)** | **127 (16 KB)** |
-
-For reference: decoding alone to JSON takes ~2 700 µs, Avro to `GenericRecord` alone 843 µs, the
-staged filter alone on decoded JSON ~260 µs. JSON is slower than Avro by nature: every byte must
-be scanned and validated, keys must be compared, types checked at runtime.
+`MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
+the planned engine keeps ~1 KiB of heap each and loads no class.

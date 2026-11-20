@@ -12,10 +12,10 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.jdk.CollectionConverters.*
 import scala.util.Random
 
-/** The staged Avro decoder against the reference (Apache Avro => JSON => interpreter), on random
+/** The planned Avro engine against the reference (Apache Avro => JSON => interpreter), on random
   * schemas, records and programs.
   */
-class AvroStagedSuite extends munit.FunSuite:
+class AvroPlannedSuite extends munit.FunSuite:
 
   override def munitTimeout = scala.concurrent.duration.Duration(5, "min")
 
@@ -29,7 +29,7 @@ class AvroStagedSuite extends munit.FunSuite:
       .fold(e => fail(s"$program: $e"), identity)(batch)
       .toVector
     val expected = run(Engine.Interpreted)
-    for engine <- List(Engine.Staged, Engine.Planned) do
+    for engine <- List(Engine.Planned) do
       val actual = run(engine)
       def describe(rs: Vector[Record[String, Array[Byte]]]) =
         rs.map(r => if batch.exists(_.value eq r.value) then s"#${r.offset} (original)" else s"#${r.offset} ${String(r.value, UTF_8)}")
@@ -88,7 +88,6 @@ class AvroStagedSuite extends munit.FunSuite:
       def run(engine: Engine) = Pipeline
         .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some(program), engine), Map(1 -> schema).get)
         .toOption.get(batch).map(r => (r.offset, String(r.value, UTF_8))).toVector
-      assertEquals(run(Engine.Staged), run(Engine.Interpreted), program)
       assertEquals(run(Engine.Planned), run(Engine.Interpreted), program)
   }
 
@@ -128,7 +127,7 @@ class AvroStagedSuite extends munit.FunSuite:
       Confluent.frame(1, Array[Byte](0x7f, 1, 2)),     // string length 63 > remaining
       Confluent.frame(1, Array[Byte](0xff.toByte))     // unterminated varint
     ).zipWithIndex.map((v, i) => Record("t", 0, i.toLong, 0L, "k", v))
-    for engine <- List(Engine.Staged, Engine.Planned) do
+    for engine <- List(Engine.Planned) do
       val out = Pipeline
         .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some("select(.i == 42)"), engine), Map(1 -> schema).get)
         .toOption.get(batch)

@@ -6,9 +6,9 @@ import org.openjdk.jmh.infra.Blackhole
 
 import java.util.concurrent.TimeUnit
 
-/** PROTOTYPE comparison: 10k Avro payloads through the same jq program, with the three engines.
-  * Staged generates bytecode; Planned runs the same reading plan with an interpreter and the
-  * program as closures; Interpreted decodes everything (Apache Avro => JSON) then interprets.
+/** 10k Avro payloads through the same jq program, with each engine: Planned reads only the
+  * fields the program uses and runs it as closures; Interpreted decodes everything (Apache Avro
+  * => JSON) then interprets. Add `-prof gc` for the allocations.
   */
 @State(Scope.Benchmark)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -21,7 +21,7 @@ class AvroEnginesBench:
   @Param(Array("filter", "regex", "project", "iterate"))
   var program: String = scala.compiletime.uninitialized
 
-  @Param(Array("Staged", "Planned", "Interpreted"))
+  @Param(Array("Planned", "Interpreted"))
   var engine: String = scala.compiletime.uninitialized
 
   private var batch: Vector[Record[String, Array[Byte]]]                    = scala.compiletime.uninitialized

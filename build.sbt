@@ -13,17 +13,11 @@ lazy val core = (project in file("core"))
   .settings(
     name := "konsume-core",
     libraryDependencies ++= Seq(
-      // The staging compiler must be exactly the same version as the Scala compiler.
-      "org.scala-lang" %% "scala3-staging" % scalaVersion.value,
       "io.circe"       %% "circe-core"     % circeVersion,
       "io.circe"       %% "circe-parser"   % circeVersion,
       "org.apache.avro" % "avro"           % "1.12.1",
       "org.scalameta"  %% "munit"          % "1.2.4" % Test
-    ),
-    // The staging compiler builds its classpath from java.class.path: it does not
-    // see sbt's layered class loaders, so anything that runs staged code must fork.
-    Test / fork := true,
-    run / fork  := true
+    )
   )
 
 lazy val bench = (project in file("bench"))

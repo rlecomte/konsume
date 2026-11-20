@@ -25,7 +25,7 @@ object MemoryProbe:
       while built < step do
         val p = Pipeline
           .forBytes[String](
-            ConsumeConfig(Seq("topic"), PayloadFormat.Avro, Some(CompilationCurveBench.source(built)), engine),
+            ConsumeConfig(Seq("topic"), PayloadFormat.Avro, Some(source(built)), engine),
             Map(BenchData.SchemaId -> BenchData.schema).get
           )
           .fold(throw _, identity)
@@ -43,6 +43,14 @@ object MemoryProbe:
         .invoke(name, "gcClassHistogram", Array[AnyRef](Array.empty[String]), Array(classOf[Array[String]].getName))
         .asInstanceOf[String]
       histo.linesIterator.take(30).foreach(l => println(s"HISTO $l"))
+
+  /** Different shapes, and a different literal in each, so that no two programs are equal. */
+  def source(i: Int): String = i % 5 match
+    case 0 => s"select(.user.age > $i)"
+    case 1 => s"""select(.user.age > $i and .user.country == "FR")"""
+    case 2 => s"""select(.name | test("^jo$i"))"""
+    case 3 => s".items[] | select(. > $i)"
+    case _ => s"""select(.user.country == "C$i" or .user.age < $i) | .user"""
 
   private def report(engine: Engine, label: String, alive: Int): Unit =
     for _ <- 1 to 3 do System.gc()

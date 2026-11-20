@@ -6,7 +6,7 @@ import io.circe.parser.parse
 import scala.sys.process.*
 import scala.util.Try
 
-/** Checks the interpreter (hence the staged code) against the real jq, when installed. */
+/** Checks the interpreter (hence the planned engine) against the real jq, when installed. */
 class JqDifferentialSuite extends munit.FunSuite:
 
   private val jqAvailable = Try(Seq("jq", "--version").!!).isSuccess

@@ -2,8 +2,7 @@ package konsume.format
 
 import io.circe.Json
 import konsume.Record
-import konsume.format.AvroStaged.{Instr, PVal, Planner}
-import konsume.format.Plan.Demand
+import konsume.format.AvroPlan.{Demand, Instr, PVal, Planner}
 import konsume.jq.{CmpOp, Jq, JqError, Runtime}
 import org.apache.avro.Schema
 
@@ -11,21 +10,25 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.util.regex.Pattern
 import scala.collection.mutable.ArrayBuffer
 
-/** PROTOTYPE: the Avro decoder of [[AvroStaged]], without generating bytecode.
+/** Runs a jq program on Avro bytes, for one writer schema, without decoding the record.
   *
-  * Same reading plan (the `Planner` of AvroStaged: needed fields into slots, the others skipped,
-  * stop after the last needed one), but run by a small interpreter instead of being compiled;
-  * the jq program is turned into closures once, with comparisons specialised on the type of the
-  * slot they read (a long, UTF-8 bytes in place, a union index...). No staging compiler: building
-  * a program takes microseconds and loads no class.
+  *  1. the paths whose values the program uses (`.user.age`) are found on its syntax tree
+  *     (`demandOf`);
+  *  2. a reading plan is derived from the writer schema ([[AvroPlan]]): needed fields into slots,
+  *     the others skipped without being decoded, stop after the last needed one;
+  *  3. the plan is run by a small interpreter, and the program is turned into closures once,
+  *     with comparisons specialised on the type of the slot they read (a long, UTF-8 bytes in
+  *     place, a union index...).
   *
-  * The paths the program uses are found on its syntax tree (`demandOf`), not by running the code
-  * generator in recording mode.
+  * Building a program takes well under a millisecond and loads no class. A record kept
+  * unchanged is emitted with its original bytes; any other output as JSON.
+  *
+  * This replaces a staged engine (bytecode generated at runtime): see docs/staged-engine.md.
   */
 object AvroPlanned:
 
-  type Fn   = AvroStaged.Fn
-  type Path = List[String]
+  type Fn   = (Record[Any, Array[Byte]], ArrayBuffer[Record[Any, Array[Byte]]]) => Unit
+  type Path = AvroPlan.Path
 
   def compile(program: Jq, schema: Schema): Fn =
     val schemas      = ArrayBuffer.empty[Schema]
@@ -195,7 +198,7 @@ object AvroPlanned:
   private val Root = Undecoded(Nil)
 
   /** Takes one value: the continuation of a node, fixed when the program is built (CPS, as in
-    * `Gen`, but with closures): running the program allocates no closure.
+    * the staged engine had it, but with closures): running the program allocates no closure.
     */
   trait Sink:
     def apply(f: Frame, v: AnyRef): Unit

@@ -11,7 +11,7 @@ import scala.util.control.NonFatal
 /** Reference Avro decoder: Confluent-framed bytes => GenericRecord => JSON view.
   *
   * Correct but slow (it builds a GenericRecord, then a Json): it is the oracle and the fallback
-  * of the staged decoder to come.
+  * of the planned engine.
   *
   * @param schemas
   *   writer schemas by registry id. Fetching them is I/O: the consumer does it (see

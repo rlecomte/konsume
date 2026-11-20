@@ -52,7 +52,7 @@ class DecodeBench:
     val avg = bytes.map(_.value.length).sum.toDouble / bytes.size
     System.err.println(f"$format: $avg%.1f bytes per payload on average")
 
-  /** bytes => filtered records, as the library does it (Avro: staged decoder). */
+  /** bytes => filtered records, as the library does it (Avro: planned engine). */
   @Benchmark def bytesToFiltered(bh: Blackhole): Unit = bh.consume(full(bytes))
 
   /** bytes => filtered records, decoding to JSON first (circe / Apache Avro), then interpreted filter. */

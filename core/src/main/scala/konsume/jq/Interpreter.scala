@@ -4,7 +4,7 @@ import io.circe.Json
 
 /** Reference implementation: a tree-walking interpreter in continuation-passing style.
   *
-  * This is what the staged compiler must agree with, and the baseline it must beat: every
+  * This is what the planned engine must agree with, and the baseline it must beat: every
   * record pays for the dispatch on the AST nodes and for the megamorphic continuations.
   */
 object Interpreter:
