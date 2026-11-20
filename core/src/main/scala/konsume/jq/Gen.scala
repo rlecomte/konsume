@@ -66,6 +66,16 @@ private[konsume] object Gen:
       recorder: Option[mutable.Set[Path]] = None
   )
 
+  /** The input of a jq expression: its value and, when it has one, its static path from the root
+    * (`.user` in `.user | .age`). In path mode, a field access on an input with a path is looked up
+    * in `Ctx.env` instead of computed. Exists only at staging time.
+    */
+  final case class In(value: SVal, path: Option[Path])
+
+  object In:
+    /** The record's value itself. */
+    def root(value: SVal): In = In(value, Some(Nil))
+
   // ---------------------------------------------------------- constants built only once
 
   /** `val c0 = ...; val c1 = ...; body` */
@@ -210,24 +220,24 @@ private[konsume] object Gen:
     case Jq.Pipe(l, r)  => pathOf(r, pathOf(l, in))
     case _              => None
 
-  /** Generates `p` applied to `in` (which must be cheap to duplicate), calling `k` on each
+  /** Generates `p` applied to `in` (whose value must be cheap to duplicate), calling `k` on each
     * output. `k` is inlined, so it is called at most once per call site: never duplicate it,
     * see `withLocalK`.
     */
-  def gen(p: Jq, in: SVal, inPath: Option[Path])(k: K)(using c: Ctx)(using Quotes): Expr[Unit] = p match
-    case Jq.Identity   => k(in)
+  def gen(p: Jq, in: In)(k: K)(using c: Ctx)(using Quotes): Expr[Unit] = p match
+    case Jq.Identity   => k(in.value)
     case Jq.Literal(j) => k(Static(j))
     case Jq.Empty      => '{ () }
-    case Jq.Not        => k(truthy(in).fold(b => Static(Runtime.bool(!b)), b => Bool('{ !$b })))
-    case Jq.Length     => k(Dyn('{ Runtime.length(${ materialize(in) }) }))
+    case Jq.Not        => k(truthy(in.value).fold(b => Static(Runtime.bool(!b)), b => Bool('{ !$b })))
+    case Jq.Length     => k(Dyn('{ Runtime.length(${ materialize(in.value) }) }))
 
     case Jq.Field(t, name) =>
-      pathOf(p, inPath) match
+      pathOf(p, in.path) match
         case Some(path) if c.pathMode => k(c.env.getOrElse(path, PathRef(path)))
-        case _ => gen(t, in, inPath)(v => k(Dyn('{ Runtime.field(${ materialize(v) }, ${ Expr(name) }) })))
-    case Jq.Index(t, i) => gen(t, in, inPath)(v => k(Dyn('{ Runtime.index(${ materialize(v) }, ${ Expr(i) }) })))
+        case _ => gen(t, in)(v => k(Dyn('{ Runtime.field(${ materialize(v) }, ${ Expr(name) }) })))
+    case Jq.Index(t, i) => gen(t, in)(v => k(Dyn('{ Runtime.index(${ materialize(v) }, ${ Expr(i) }) })))
     case Jq.Iterate(t) =>
-      gen(t, in, inPath) { v =>
+      gen(t, in) { v =>
         '{
           val it = Runtime.iterate(${ materialize(v) })
           while it.hasNext do
@@ -236,48 +246,48 @@ private[konsume] object Gen:
         }
       }
 
-    case Jq.Pipe(l, r) => gen(l, in, inPath)(v => share(v)(sv => gen(r, sv, pathOf(l, inPath))(k)))
+    case Jq.Pipe(l, r) => gen(l, in)(v => share(v)(sv => gen(r, In(sv, pathOf(l, in.path)))(k)))
 
     case Jq.Compare(op, l, r) =>
       // jq iterates over the right operand in the outer loop
-      gen(r, in, inPath)(rv => share(rv)(b => gen(l, in, inPath)(lv => share(lv)(a => k(compare(op, a, b))))))
+      gen(r, in)(rv => share(rv)(b => gen(l, in)(lv => share(lv)(a => k(compare(op, a, b))))))
 
-    case Jq.And(l, r) => logical(l, r, in, inPath, shortCircuitOn = false)(k)
-    case Jq.Or(l, r)  => logical(l, r, in, inPath, shortCircuitOn = true)(k)
+    case Jq.And(l, r) => logical(l, r, in, shortCircuitOn = false)(k)
+    case Jq.Or(l, r)  => logical(l, r, in, shortCircuitOn = true)(k)
 
     case Jq.Select(cond) =>
-      gen(cond, in, inPath) { cv =>
+      gen(cond, in) { cv =>
         truthy(cv) match
-          case Left(true)  => k(in)
+          case Left(true)  => k(in.value)
           case Left(false) => '{ () }
-          case Right(b)    => '{ if $b then ${ k(in) } }
+          case Right(b)    => '{ if $b then ${ k(in.value) } }
       }
 
     case Jq.Test(Jq.Literal(j)) if j.isString =>
       val re = c.consts.regexes(j.asString.get)
-      k(Bool('{ Runtime.test(${ materialize(in) }, $re) }))
+      k(Bool('{ Runtime.test(${ materialize(in.value) }, $re) }))
     case Jq.Test(re) =>
-      gen(re, in, inPath)(rv => k(Bool('{ Runtime.test(${ materialize(in) }, Runtime.compileRegex(${ materialize(rv) })) })))
+      gen(re, in)(rv => k(Bool('{ Runtime.test(${ materialize(in.value) }, Runtime.compileRegex(${ materialize(rv) })) })))
 
     case Jq.StartsWith(prefix) =>
-      gen(prefix, in, inPath)(pv => k(Bool('{ Runtime.startsWith(${ materialize(in) }, ${ materialize(pv) }) })))
+      gen(prefix, in)(pv => k(Bool('{ Runtime.startsWith(${ materialize(in.value) }, ${ materialize(pv) }) })))
     case Jq.EndsWith(suffix) =>
-      gen(suffix, in, inPath)(sv => k(Bool('{ Runtime.endsWith(${ materialize(in) }, ${ materialize(sv) }) })))
+      gen(suffix, in)(sv => k(Bool('{ Runtime.endsWith(${ materialize(in.value) }, ${ materialize(sv) }) })))
 
   /** `l and r` (shortCircuitOn = false) / `l or r` (shortCircuitOn = true). */
-  private def logical(l: Jq, r: Jq, in: SVal, inPath: Option[Path], shortCircuitOn: Boolean)(k: K)(using
+  private def logical(l: Jq, r: Jq, in: In, shortCircuitOn: Boolean)(k: K)(using
       Ctx,
       Quotes
   ): Expr[Unit] =
-    gen(l, in, inPath) { lv =>
+    gen(l, in) { lv =>
       truthy(lv) match
         case Left(`shortCircuitOn`) => k(Static(Runtime.bool(shortCircuitOn)))
-        case Left(_)                => gen(r, in, inPath)(rv => k(boolOf(rv)))
+        case Left(_)                => gen(r, in)(rv => k(boolOf(rv)))
         case Right(lb) if singleOutput(r) =>
           // r yields exactly one value: compute it as a plain boolean, no duplication of k
           val rb: Expr[Boolean] = '{
             var res = false
-            ${ gen(r, in, inPath)(rv => '{ res = ${ boolExpr(truthy(rv)) } }) }
+            ${ gen(r, in)(rv => '{ res = ${ boolExpr(truthy(rv)) } }) }
             res
           }
           k(Bool(if shortCircuitOn then '{ $lb || $rb } else '{ $lb && $rb }))
@@ -285,7 +295,7 @@ private[konsume] object Gen:
           // r may yield 0 or n values: k is needed in both branches, share it as a local def
           withLocalK(k) { k2 =>
             val short = k2(Static(Runtime.bool(shortCircuitOn)))
-            val long  = gen(r, in, inPath)(rv => k2(boolOf(rv)))
+            val long  = gen(r, in)(rv => k2(boolOf(rv)))
             if shortCircuitOn then '{ if $lb then $short else $long }
             else '{ if $lb then $long else $short }
           }

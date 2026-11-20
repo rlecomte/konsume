@@ -32,7 +32,7 @@ object Staged:
           val value  = record.value
           try
             ${
-              gen(program, SVal.Dyn('value, isInput = true), None) {
+              gen(program, In(SVal.Dyn('value, isInput = true), None)) {
                 case SVal.Dyn(_, true) => '{ out += record; () }
                 case v                 => '{ out += record.copy(value = ${ materialize(v) }); () }
               }

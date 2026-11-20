@@ -74,7 +74,7 @@ object JsonStaged:
             }
             given Ctx = Ctx(consts, pathMode = true, env = env)
             val input = env.getOrElse(Nil, SVal.PathRef(Nil))
-            val run = gen(program, input, Some(Nil)) { v =>
+            val run = gen(program, In.root(input)) { v =>
               if v eq input then '{ out += record; () }
               else '{ out += record.copy(value = ${ materialize(v) }.noSpaces.getBytes(UTF_8)); () }
             }

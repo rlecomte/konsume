@@ -28,7 +28,7 @@ private[format] object Plan:
     val used = scala.collection.mutable.Set.empty[Path]
     given Ctx = Ctx(consts, pathMode = true, recorder = Some(used))
     val root  = SVal.PathRef(Nil)
-    gen(program, root, Some(Nil))(v => { if v ne root then materialize(v); '{ () } })
+    gen(program, In.root(root))(v => { if v ne root then materialize(v); '{ () } })
     Demand.of(used)
 
   enum SlotType:

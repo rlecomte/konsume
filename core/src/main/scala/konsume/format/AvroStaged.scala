@@ -170,7 +170,7 @@ object AvroStaged:
             }
             given Ctx = Ctx(consts, pathMode = true, env = env)
             val root  = env.getOrElse(Nil, SVal.PathRef(Nil))
-            val run = gen(program, root, Some(Nil)) { v =>
+            val run = gen(program, In.root(root)) { v =>
               if v eq root then '{ out += record; () }
               else '{ out += record.copy(value = ${ materialize(v) }.noSpaces.getBytes(UTF_8)); () }
             }
