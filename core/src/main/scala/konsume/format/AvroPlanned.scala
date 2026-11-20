@@ -32,22 +32,48 @@ object AvroPlanned:
     val planner      = Planner(schemas)
     val (plan, penv) = planner.value(schema, Nil, demandOf(program), needEnd = false)
     val read         = steps(plan, schemas.toVector)
-    val slots        = planner.slots.size
-    val hasRefs      = planner.slots.contains(Plan.SlotType.Json)
     val c            = Closures(penv)
-    val run          = c.node(program, Some(Nil))
+    val run          = c.node(program, Some(Nil), c.emit)
+    val (slots, regs) = (planner.slots.size, c.registers)
+    // one frame per thread, reused from record to record: no allocation per record
+    val frames = ThreadLocal.withInitial(() => Frame(slots, regs))
     (record, out) =>
-      val bytes = record.value
-      val f     = Frame(bytes, new Array[Long](slots), if hasRefs then new Array[AnyRef](slots) else null)
-      read(AvroCursor(bytes, Confluent.HeaderSize), f)
+      val f = frames.get()
+      f.reset(record, out)
       try
-        run(f, Root, v => if v eq Root then out += record else out += record.copy(value = c.json(v, f).noSpaces.getBytes(UTF_8)))
+        read(f.cur, f)
+        run(f, Root)
       catch case _: JqError => () // the record is skipped, outputs already emitted are kept
+      finally f.clear()            // the frame outlives the batch: keep no record nor output alive
 
   // ---------------------------------------------------------------------------- slots
 
-  /** The slots of one record: longs, doubles (raw bits), ints, booleans in `nums`, JSON in `refs`. */
-  final class Frame(val bytes: Array[Byte], val nums: Array[Long], val refs: Array[AnyRef]):
+  /** What the program needs while it runs on one record: the slots of the reading plan (longs,
+    * doubles as raw bits, ints, booleans in `nums`, JSON in `refs`), the registers of the program
+    * (values a node needs again after its operands ran), where to emit.
+    */
+  final class Frame(slots: Int, registers: Int):
+    val nums                                        = new Array[Long](slots)
+    val refs                                        = new Array[AnyRef](slots)
+    val regs                                        = new Array[AnyRef](registers)
+    val cur                                         = AvroCursor(null, 0)
+    var bytes: Array[Byte]                          = null
+    var record: Record[Any, Array[Byte]]            = null
+    var out: ArrayBuffer[Record[Any, Array[Byte]]] = null
+
+    def reset(r: Record[Any, Array[Byte]], o: ArrayBuffer[Record[Any, Array[Byte]]]): Unit =
+      record = r
+      out = o
+      bytes = r.value
+      cur.bytes = bytes
+      cur.pos = Confluent.HeaderSize
+
+    def clear(): Unit =
+      record = null
+      out = null
+      bytes = null
+      cur.bytes = null
+
     inline def double(s: Int): Double = java.lang.Double.longBitsToDouble(nums(s))
     inline def int(s: Int): Int       = nums(s).toInt
 
@@ -168,21 +194,32 @@ object AvroPlanned:
   final case class Undecoded(path: Path)
   private val Root = Undecoded(Nil)
 
+  /** Takes one value: the continuation of a node, fixed when the program is built (CPS, as in
+    * `Gen`, but with closures): running the program allocates no closure.
+    */
   trait Sink:
-    def apply(v: AnyRef): Unit
+    def apply(f: Frame, v: AnyRef): Unit
 
-  trait Node:
-    def apply(f: Frame, in: AnyRef, k: Sink): Unit
-
-  type Cond = Frame => Boolean
+  /** A condition on the slots and the current input. */
+  trait Cond:
+    def apply(f: Frame, v: AnyRef): Boolean
 
   private enum Operand:
     case Lit(value: Json)
+    /** a path of the record, read into slots */
     case At(value: PVal)
+    /** the current input, a computed value (`.items[] | select(. > 50)`) */
+    case Input
 
   import PVal.*
 
   private final class Closures(penv: Map[Path, PVal]):
+
+    private var nregs = 0
+    def registers: Int = nregs
+    private def register(): Int =
+      nregs += 1
+      nregs - 1
 
     private val materializers = penv.map((p, v) => p -> materialize(v))
 
@@ -194,177 +231,242 @@ object AvroPlanned:
           case Some(m) => m(f)
           case None    => throw IllegalStateException(s"internal error: path .${p.mkString(".")} was not decoded")
 
-    def node(p: Jq, in: Option[Path]): Node =
-      boolValue(p, in) match
-        case Some(c) => (f, _, k) => k(Runtime.bool(c(f)))
-        case None    => generic(p, in)
+    val emit: Sink = (f, v) =>
+      if v eq Root then f.out += f.record
+      else f.out += f.record.copy(value = json(v, f).noSpaces.getBytes(UTF_8))
 
-    private def generic(p: Jq, in: Option[Path]): Node = p match
-      case Jq.Identity   => (_, v, k) => k(v)
-      case Jq.Literal(j) => (_, _, k) => k(j)
-      case Jq.Empty      => (_, _, _) => ()
-      case Jq.Not        => (f, v, k) => k(Runtime.bool(!Runtime.truthy(json(v, f))))
-      case Jq.Length     => (f, v, k) => k(Runtime.length(json(v, f)))
+    /** `p` on its input, each output passed to `k`. */
+    def node(p: Jq, in: Option[Path], k: Sink): Sink =
+      boolValue(p, in) match
+        case Some(c) => (f, v) => k(f, Runtime.bool(c(f, v)))
+        case None    => generic(p, in, k)
+
+    private def generic(p: Jq, in: Option[Path], k: Sink): Sink = p match
+      case Jq.Identity   => k
+      case Jq.Literal(j) => (f, _) => k(f, j)
+      case Jq.Empty      => (_, _) => ()
+      case Jq.Not        => (f, v) => k(f, Runtime.bool(!Runtime.truthy(json(v, f))))
+      case Jq.Length     => (f, v) => k(f, Runtime.length(json(v, f)))
 
       case Jq.Field(t, name) =>
         staticPath(p, in) match
           case Some(path) =>
             materializers.get(path) match
-              case Some(m) => (f, _, k) => k(m(f))
-              case None    => val u = Undecoded(path); (_, _, k) => k(u) // only navigated through
-          case None =>
-            val tn = node(t, in)
-            (f, v, k) => tn(f, v, x => k(Runtime.field(json(x, f), name)))
-      case Jq.Index(t, i) =>
-        val tn = node(t, in)
-        (f, v, k) => tn(f, v, x => k(Runtime.index(json(x, f), i)))
+              case Some(m) => (f, _) => k(f, m(f))
+              case None    => val u = Undecoded(path); (f, _) => k(f, u) // only navigated through
+          case None => node(t, in, (f, x) => k(f, Runtime.field(json(x, f), name)))
+      case Jq.Index(t, i) => node(t, in, (f, x) => k(f, Runtime.index(json(x, f), i)))
       case Jq.Iterate(t) =>
-        val tn = node(t, in)
-        (f, v, k) =>
-          tn(f, v, x =>
-            val it = Runtime.iterate(json(x, f))
-            while it.hasNext do k(it.next()))
+        node(t, in, (f, x) =>
+          val it = Runtime.iterate(json(x, f))
+          while it.hasNext do k(f, it.next()))
 
-      case Jq.Pipe(l, r) =>
-        val (ln, rn) = (node(l, in), node(r, pathOf(l, in)))
-        (f, v, k) => ln(f, v, x => rn(f, x, k))
+      case Jq.Pipe(l, r) => node(l, in, node(r, pathOf(l, in), k))
 
       case Jq.Compare(op, l, r) =>
         // jq iterates over the right operand in the outer loop
-        val (ln, rn) = (node(l, in), node(r, in))
-        (f, v, k) => rn(f, v, b => ln(f, v, a => k(Runtime.bool(op.test(Runtime.compare(json(a, f), json(b, f)))))))
+        val (input, right) = (register(), register())
+        val ln = node(l, in, (f, a) => k(f, Runtime.bool(op.test(Runtime.compare(json(a, f), json(f.regs(right), f))))))
+        val rn = node(r, in, (f, b) => { f.regs(right) = b; ln(f, f.regs(input)) })
+        (f, v) => { f.regs(input) = v; rn(f, v) }
 
-      case Jq.And(l, r) => logical(l, r, in, shortCircuitOn = false)
-      case Jq.Or(l, r)  => logical(l, r, in, shortCircuitOn = true)
+      case Jq.And(l, r) => logical(l, r, in, shortCircuitOn = false, k)
+      case Jq.Or(l, r)  => logical(l, r, in, shortCircuitOn = true, k)
 
       case Jq.Select(c) =>
         cond(c, in).filter(_ => singleOutput(c)) match
-          case Some(cf) => (f, v, k) => if cf(f) then k(v)
+          case Some(cf) => (f, v) => if cf(f, v) then k(f, v)
           case None =>
-            val cn = node(c, in)
-            (f, v, k) => cn(f, v, x => if Runtime.truthy(json(x, f)) then k(v))
+            val input = register()
+            val cn    = node(c, in, (f, x) => if Runtime.truthy(json(x, f)) then k(f, f.regs(input)))
+            (f, v) => { f.regs(input) = v; cn(f, v) }
 
       case Jq.Test(Jq.Literal(j)) if j.isString =>
         val re = Pattern.compile(j.asString.get)
-        (f, v, k) => k(Runtime.bool(Runtime.test(json(v, f), re)))
+        (f, v) => k(f, Runtime.bool(Runtime.test(json(v, f), re)))
       case Jq.Test(re) =>
-        val rn = node(re, in)
-        (f, v, k) => rn(f, v, x => k(Runtime.bool(Runtime.test(json(v, f), Runtime.compileRegex(json(x, f))))))
+        withInput(re, in)((f, v, x) => k(f, Runtime.bool(Runtime.test(json(v, f), Runtime.compileRegex(json(x, f))))))
       case Jq.StartsWith(prefix) =>
-        val pn = node(prefix, in)
-        (f, v, k) => pn(f, v, x => k(Runtime.bool(Runtime.startsWith(json(v, f), json(x, f)))))
+        withInput(prefix, in)((f, v, x) => k(f, Runtime.bool(Runtime.startsWith(json(v, f), json(x, f)))))
       case Jq.EndsWith(suffix) =>
-        val sn = node(suffix, in)
-        (f, v, k) => sn(f, v, x => k(Runtime.bool(Runtime.endsWith(json(v, f), json(x, f)))))
+        withInput(suffix, in)((f, v, x) => k(f, Runtime.bool(Runtime.endsWith(json(v, f), json(x, f)))))
 
-    private def logical(l: Jq, r: Jq, in: Option[Path], shortCircuitOn: Boolean): Node =
-      val (ln, rn) = (node(l, in), node(r, in))
-      (f, v, k) =>
-        ln(f, v, a =>
-          if Runtime.truthy(json(a, f)) == shortCircuitOn then k(Runtime.bool(shortCircuitOn))
-          else rn(f, v, b => k(Runtime.bool(Runtime.truthy(json(b, f))))))
+    /** `body(input, x)` for each output `x` of `arg` on the input. */
+    private def withInput(arg: Jq, in: Option[Path])(body: (Frame, AnyRef, AnyRef) => Unit): Sink =
+      val input = register()
+      val an    = node(arg, in, (f, x) => body(f, f.regs(input), x))
+      (f, v) => { f.regs(input) = v; an(f, v) }
+
+    private def logical(l: Jq, r: Jq, in: Option[Path], shortCircuitOn: Boolean, k: Sink): Sink =
+      val input = register()
+      val rn    = node(r, in, (f, b) => k(f, Runtime.bool(Runtime.truthy(json(b, f)))))
+      val ln = node(l, in, (f, a) =>
+        if Runtime.truthy(json(a, f)) == shortCircuitOn then k(f, Runtime.bool(shortCircuitOn))
+        else rn(f, f.regs(input)))
+      (f, v) => { f.regs(input) = v; ln(f, v) }
 
     // ------------------------------------------------- booleans, without going through Json
 
-    /** `p` yields exactly one boolean, computed straight from the slots. */
+    /** `p` yields exactly one boolean, computed from the slots or the input. */
     private def boolValue(p: Jq, in: Option[Path]): Option[Cond] = p match
       case Jq.Compare(op, l, r) =>
         (operand(l, in), operand(r, in)) match
           case (Some(Operand.Lit(a)), Some(Operand.Lit(b))) => Some(const(Runtime.compareOp(op, a, b)))
-          case (Some(Operand.At(v)), Some(Operand.Lit(y)))  => Some(compare(v, op, y))
-          case (Some(Operand.Lit(y)), Some(Operand.At(v)))  => Some(compare(v, op.flip, y))
+          case (Some(o), Some(Operand.Lit(y)))              => Some(compare(o, op, y))
+          case (Some(Operand.Lit(y)), Some(o))              => Some(compare(o, op.flip, y))
           case _                                            => None
       case Jq.And(l, r) =>
-        for a <- cond(l, in); b <- cond(r, in) yield (f: Frame) => a(f) && b(f)
+        for a <- cond(l, in); b <- cond(r, in) yield (f, v) => a(f, v) && b(f, v)
       case Jq.Or(l, r) =>
-        for a <- cond(l, in); b <- cond(r, in) yield (f: Frame) => a(f) || b(f)
-      case Jq.Pipe(x, Jq.Not) => cond(x, in).map(c => (f: Frame) => !c(f))
-      case Jq.Not             => cond(Jq.Identity, in).map(c => (f: Frame) => !c(f))
-      case _                  => None
+        for a <- cond(l, in); b <- cond(r, in) yield (f, v) => a(f, v) || b(f, v)
+      case Jq.Pipe(x, Jq.Not) => cond(x, in).map(c => (f, v) => !c(f, v))
+      case Jq.Not             => cond(Jq.Identity, in).map(c => (f, v) => !c(f, v))
+      case Jq.Pipe(x, fn @ (Jq.Test(Jq.Literal(_)) | Jq.StartsWith(Jq.Literal(_)) | Jq.EndsWith(Jq.Literal(_)))) =>
+        operand(x, in).flatMap(stringFunction(_, fn))
+      case Jq.Test(Jq.Literal(_)) | Jq.StartsWith(Jq.Literal(_)) | Jq.EndsWith(Jq.Literal(_)) =>
+        operand(Jq.Identity, in).flatMap(stringFunction(_, p))
+      case _ => None
 
-    /** The truthiness of `p`'s only output, straight from the slots. */
+    /** The truthiness of `p`'s only output. */
     private def cond(p: Jq, in: Option[Path]): Option[Cond] =
       boolValue(p, in).orElse(operand(p, in).map {
         case Operand.Lit(j) => const(Runtime.truthy(j))
         case Operand.At(v)  => truthy(v)
+        case Operand.Input  => (f, v) => Runtime.truthy(json(v, f))
       })
 
     private def operand(p: Jq, in: Option[Path]): Option[Operand] = p match
-      case Jq.Literal(j) => Some(Operand.Lit(j))
-      case _             => staticPath(p, in).flatMap(penv.get).map(Operand.At(_))
+      case Jq.Literal(j)                => Some(Operand.Lit(j))
+      case Jq.Identity if in.isEmpty    => Some(Operand.Input)
+      case _                            => staticPath(p, in).flatMap(penv.get).map(Operand.At(_))
 
-    private def const(b: Boolean): Cond = if b then _ => true else _ => false
+    private def const(b: Boolean): Cond = if b then (_, _) => true else (_, _) => false
+
+    /** The value of an operand, as a `Json`. */
+    private def value(o: Operand): (Frame, AnyRef) => Json = o match
+      case Operand.Lit(j) => (_, _) => j
+      case Operand.At(pv) => val m = materialize(pv); (f, _) => m(f)
+      case Operand.Input  => (f, v) => json(v, f)
+
+    /** `test`, `startswith`, `endswith` with a literal argument. A string still in the payload is
+      * matched as UTF-8 bytes (a prefix of the code points is a prefix of the bytes); regexes need
+      * it decoded.
+      */
+    private def stringFunction(o: Operand, fn: Jq): Option[Cond] =
+      val x = value(o)
+      fn match
+        case Jq.Test(Jq.Literal(j)) if j.isString =>
+          val re = Pattern.compile(j.asString.get)
+          o match
+            case Operand.At(PString(off, len)) => Some((f, _) => re.matcher(String(f.bytes, f.int(off), f.int(len), UTF_8)).find())
+            case _                             => Some((f, v) => Runtime.test(x(f, v), re))
+        case Jq.Test(Jq.Literal(j)) => Some((f, v) => Runtime.test(x(f, v), Runtime.compileRegex(j)))
+        case Jq.StartsWith(Jq.Literal(j)) =>
+          (o, j.asString) match
+            case (Operand.At(PString(off, len)), Some(s)) =>
+              val lit = s.getBytes(UTF_8)
+              Some((f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd = false))
+            case _ => Some((f, v) => Runtime.startsWith(x(f, v), j))
+        case Jq.EndsWith(Jq.Literal(j)) =>
+          (o, j.asString) match
+            case (Operand.At(PString(off, len)), Some(s)) =>
+              val lit = s.getBytes(UTF_8)
+              Some((f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd = true))
+            case _ => Some((f, v) => Runtime.endsWith(x(f, v), j))
+        case _ => None
+
+    /** Does the string `bytes[off, off + len)` start (or end) with `lit`? */
+    private def bytesAt(bytes: Array[Byte], off: Int, len: Int, lit: Array[Byte], atEnd: Boolean): Boolean =
+      lit.length <= len && {
+        val from = if atEnd then off + len - lit.length else off
+        java.util.Arrays.equals(bytes, from, from + lit.length, lit, 0, lit.length)
+      }
+
+    /** `o op y`. */
+    private def compare(o: Operand, op: CmpOp, y: Json): Cond = o match
+      case Operand.At(pv) => compareSlot(pv, op, y)
+      case Operand.Lit(j) => const(Runtime.compareOp(op, j, y))
+      case Operand.Input =>
+        val yr = Runtime.rank(y)
+        if y.isNumber then
+          val d = y.asNumber.get.toDouble
+          (f, v) =>
+            val j = json(v, f)
+            val r = Runtime.rank(j)
+            if r == Runtime.NumberRank then op.test(Runtime.compareDoubles(j.asNumber.get.toDouble, d))
+            else op.test(Integer.compare(r, yr))
+        else (f, v) => op.test(Runtime.compare(json(v, f), y))
 
     /** `v op y`, specialised on the type of `v`'s slot. */
-    private def compare(v: PVal, op: CmpOp, y: Json): Cond =
+    private def compareSlot(v: PVal, op: CmpOp, y: Json): Cond =
       def byRank(rank: Int): Cond = const(op.test(Integer.compare(rank, Runtime.rank(y))))
       v match
         case PStatic(j) => const(Runtime.compareOp(op, j, y))
         case PLong(s) =>
           if y.isNumber then
             val d = y.asNumber.get.toDouble
-            f => op.test(Runtime.compareDoubles(f.nums(s).toDouble, d))
+            (f, _) => op.test(Runtime.compareDoubles(f.nums(s).toDouble, d))
           else byRank(Runtime.NumberRank)
         case PDouble(s, _) =>
           // NaN and infinities are null in the JSON view
           val whenNull = op.test(Integer.compare(Runtime.NullRank, Runtime.rank(y)))
           if y.isNumber then
             val d = y.asNumber.get.toDouble
-            f =>
+            (f, _) =>
               val x = f.double(s)
               if java.lang.Double.isFinite(x) then op.test(Runtime.compareDoubles(x, d)) else whenNull
           else
             val whenNumber = op.test(Integer.compare(Runtime.NumberRank, Runtime.rank(y)))
             if whenNumber == whenNull then const(whenNumber)
-            else f => java.lang.Double.isFinite(f.double(s)) == whenNumber
+            else (f, _) => java.lang.Double.isFinite(f.double(s)) == whenNumber
         case PBoolean(s) =>
           val (t, e) = (Runtime.compareOp(op, Json.True, y), Runtime.compareOp(op, Json.False, y))
-          f => if f.nums(s) != 0 then t else e
+          (f, _) => if f.nums(s) != 0 then t else e
         case PString(off, len) =>
           y.asString match
             case Some(str) =>
               val lit = str.getBytes(UTF_8)
               op match
-                case CmpOp.Eq  => f => Runtime.utf8Equals(f.bytes, f.int(off), f.int(len), lit)
-                case CmpOp.Neq => f => !Runtime.utf8Equals(f.bytes, f.int(off), f.int(len), lit)
-                case _         => f => op.test(Runtime.compareUtf8(f.bytes, f.int(off), f.int(len), lit))
+                case CmpOp.Eq  => (f, _) => Runtime.utf8Equals(f.bytes, f.int(off), f.int(len), lit)
+                case CmpOp.Neq => (f, _) => !Runtime.utf8Equals(f.bytes, f.int(off), f.int(len), lit)
+                case _         => (f, _) => op.test(Runtime.compareUtf8(f.bytes, f.int(off), f.int(len), lit))
             case None => byRank(Runtime.StringRank)
         case PEnum(s, symbols) =>
           val results = symbols.map(sym => Runtime.compareOp(op, Json.fromString(sym), y)).toArray
-          f => results(f.int(s))
+          (f, _) => results(f.int(s))
         case PChoice(s, branches) =>
-          val bs = branches.map(compare(_, op, y)).toArray
-          f => bs(f.int(s))(f)
+          val bs = branches.map(compareSlot(_, op, y)).toArray
+          (f, v) => bs(f.int(s))(f, v)
         case PJson(s, rank) =>
           if rank != Runtime.rank(y) then byRank(rank)
-          else f => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
+          else (f, _) => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
         case PField(_, _) =>
           val m = materialize(v)
-          f => op.test(Runtime.compare(m(f), y))
+          (f, _) => op.test(Runtime.compare(m(f), y))
 
     private def truthy(v: PVal): Cond = v match
-      case PStatic(j)                         => const(Runtime.truthy(j))
+      case PStatic(j)                             => const(Runtime.truthy(j))
       case PLong(_) | PString(_, _) | PEnum(_, _) => const(true)
-      case PDouble(s, _)                      => f => java.lang.Double.isFinite(f.double(s))
-      case PBoolean(s)                        => f => f.nums(s) != 0
-      case PJson(_, rank)                     => const(rank > Runtime.FalseRank)
+      case PDouble(s, _)                          => (f, _) => java.lang.Double.isFinite(f.double(s))
+      case PBoolean(s)                            => (f, _) => f.nums(s) != 0
+      case PJson(_, rank)                         => const(rank > Runtime.FalseRank)
       case PChoice(s, branches) =>
         val bs = branches.map(truthy).toArray
-        f => bs(f.int(s))(f)
+        (f, v) => bs(f.int(s))(f, v)
       case PField(_, _) =>
         val m = materialize(v)
-        f => Runtime.truthy(m(f))
+        (f, _) => Runtime.truthy(m(f))
 
     /** The `Json` of a slot: the fallback for anything but comparisons with a literal. */
     private def materialize(v: PVal): Frame => Json = v match
-      case PStatic(j)              => _ => j
-      case PLong(s)                => f => Json.fromLong(f.nums(s))
-      case PDouble(s, true)        => f => Json.fromFloatOrNull(f.double(s).toFloat)
-      case PDouble(s, false)       => f => Json.fromDoubleOrNull(f.double(s))
-      case PBoolean(s)             => f => Runtime.bool(f.nums(s) != 0)
-      case PString(off, len)       => f => Json.fromString(String(f.bytes, f.int(off), f.int(len), UTF_8))
-      case PJson(s, _)             => f => f.refs(s).asInstanceOf[Json]
-      case PEnum(s, symbols)       =>
+      case PStatic(j)        => _ => j
+      case PLong(s)          => f => Json.fromLong(f.nums(s))
+      case PDouble(s, true)  => f => Json.fromFloatOrNull(f.double(s).toFloat)
+      case PDouble(s, false) => f => Json.fromDoubleOrNull(f.double(s))
+      case PBoolean(s)       => f => Runtime.bool(f.nums(s) != 0)
+      case PString(off, len) => f => Json.fromString(String(f.bytes, f.int(off), f.int(len), UTF_8))
+      case PJson(s, _)       => f => f.refs(s).asInstanceOf[Json]
+      case PEnum(s, symbols) =>
         val js = symbols.map(Json.fromString).toArray
         f => js(f.int(s))
       case PChoice(s, branches) =>

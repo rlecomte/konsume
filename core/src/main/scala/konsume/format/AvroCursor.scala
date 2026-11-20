@@ -10,7 +10,7 @@ import scala.jdk.CollectionConverters.*
 /** Reads Avro binary encoding in place. Truncated input throws an IndexOutOfBoundsException
   * or a DecodeError: callers treat both as an undecodable record.
   */
-final class AvroCursor(val bytes: Array[Byte], var pos: Int):
+final class AvroCursor(var bytes: Array[Byte], var pos: Int):
 
   /** zigzag varint, for both `int` and `long` */
   def readLong(): Long =

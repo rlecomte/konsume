@@ -92,6 +92,32 @@ class AvroStagedSuite extends munit.FunSuite:
       assertEquals(run(Engine.Planned), run(Engine.Interpreted), program)
   }
 
+  test("string functions on multi-byte UTF-8, iteration over computed values") {
+    val schema = AvroFixtures.schema("""
+      {"type": "record", "name": "S", "fields": [
+        {"name": "s", "type": "string"},
+        {"name": "u", "type": ["null", "string", "int"]},
+        {"name": "xs", "type": {"type": "array", "items": "int"}}]}""")
+    val values = List[(String, Any)](
+      "jo" -> null, "jöhn" -> "élan", "" -> 3, "élan" -> "", "nej" -> "€uro€", "€uro€" -> "jo", "ö" -> null
+    )
+    val batch = values.zipWithIndex.map { case ((str, u), i) =>
+      val r = GenericData.Record(schema)
+      r.put("s", str)
+      r.put("u", u)
+      r.put("xs", java.util.List.of[Integer](i, i * 2, 5))
+      Record("t", 0, i.toLong, 0L, "k", AvroFixtures.encode(1, r))
+    }.toVector
+    val programs = List(
+      """select(.s | startswith("jö"))""", """select(.s | startswith(""))""", """select(.s | endswith("€"))""",
+      """select(.s | endswith("n"))""", """select(.s | test("ö"))""", """select(.u | startswith("é"))""",
+      """select(.u | endswith("o"))""", """select(.s | startswith(1))""", """select(.u | test("^j"))""",
+      """.xs[] | select(. > 4)""", """.xs[] | select(. == 5 or . < 2)""", """.xs[] | select(2 < .)""",
+      """.s | startswith("j")""", """.xs[] | select(. != "a")"""
+    )
+    programs.foreach(check(schema, batch, _))
+  }
+
   test("truncated and corrupted payloads are skipped") {
     val schema = AvroFixtures.schema("""
       {"type": "record", "name": "R", "fields": [{"name": "s", "type": "string"}, {"name": "i", "type": "int"}]}""")
