@@ -1,7 +1,7 @@
 package konsume
 
 import io.circe.Json
-import konsume.format.{AvroDecoder, AvroPlanned, Confluent, DecodeError, Decoder, JsonDecoder}
+import konsume.format.{AvroDecoder, AvroPlanned, Confluent, DecodeError, Decoder, JsonDecoder, JsonPlanned}
 import konsume.jq.{Interpreter, Jq, JqError, ParseError, Parser}
 import org.apache.avro.Schema
 
@@ -11,9 +11,8 @@ import scala.collection.mutable.ArrayBuffer
 
 /** How the jq program is executed. */
 enum Engine:
-  /** Avro: only the fields the program uses are read from the bytes, the program runs as
-    * closures specialised on their types, see [[format.AvroPlanned]]. JSON: not done yet, the
-    * same as `Interpreted`.
+  /** Only the values the program uses are read from the bytes, the program runs as closures
+    * specialised on their types, see [[format.AvroPlanned]] and [[format.JsonPlanned]].
     */
   case Planned
   /** Values decoded to JSON first, then a tree-walking interpreter: the reference semantics. */
@@ -47,8 +46,9 @@ object Pipeline:
     * unchanged (a filter) is emitted with its original bytes, untouched; a transformed value is
     * emitted as JSON. Records that cannot be decoded are skipped.
     *
-    * With the planned engine, Avro bytes are read directly, see [[format.AvroPlanned]]. Otherwise
-    * values are decoded to JSON first (circe, or Apache Avro then converted), then interpreted.
+    * With the planned engine, the bytes are read directly, see [[format.AvroPlanned]] and
+    * [[format.JsonPlanned]]. With the interpreter, values are decoded to JSON first (circe, or
+    * Apache Avro then converted).
     *
     * @param schemas
     *   Avro writer schemas by registry id, fetched beforehand by the consumer.
@@ -63,7 +63,8 @@ object Pipeline:
         Parser.parse(source).map { program =>
           (config.valueFormat, config.engine) match
             case (PayloadFormat.Avro, Engine.Planned) => avroPlanned(program, schemas)
-            case (format, _) =>
+            case (PayloadFormat.Json, Engine.Planned) => jsonPlanned(program)
+            case (format, Engine.Interpreted) =>
               val decoder: Decoder = format match
                 case PayloadFormat.Json => JsonDecoder
                 case PayloadFormat.Avro => AvroDecoder(schemas)
@@ -88,9 +89,20 @@ object Pipeline:
       }
       out
 
+  private def jsonPlanned[K](program: Jq): Pipeline[K, Array[Byte], K, Array[Byte]] =
+    val f = JsonPlanned.compile(program)
+    batch =>
+      val out = ArrayBuffer.empty[Record[Any, Array[Byte]]]
+      batch.foreach { r =>
+        try f(r, out)
+        catch case _: DecodeError | _: IndexOutOfBoundsException => () // undecodable: skipped
+      }
+      // JsonPlanned only knows Record[Any, _]: it copies keys, never looks at them.
+      out.asInstanceOf[ArrayBuffer[Record[K, Array[Byte]]]]
+
   /** One program per writer schema id, built on first sight of the id. */
   private def avroPlanned[K](program: Jq, schemas: Int => Option[Schema]): Pipeline[K, Array[Byte], K, Array[Byte]] =
-    val bySchemaId = ConcurrentHashMap[Int, AvroPlanned.Fn]()
+    val bySchemaId = ConcurrentHashMap[Int, format.Planned.Fn]()
     batch =>
       val out = ArrayBuffer.empty[Record[Any, Array[Byte]]]
       batch.foreach { r =>

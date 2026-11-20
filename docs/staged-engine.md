@@ -16,9 +16,8 @@ Last commit with the staged engine, next to the planned one:
 | `core/src/main/scala/konsume/jq/Gen.scala` | code generation for jq, shared by every format |
 | `core/src/main/scala/konsume/jq/StagingCompiler.scala` | the staging compiler, recycled every 500 compilations |
 | `core/src/main/scala/konsume/format/AvroStaged.scala` | Avro: reading plan compiled to code |
-| `core/src/main/scala/konsume/format/JsonStaged.scala`, `JsonCursor.scala` | JSON: staged scanner of the bytes |
+| `core/src/main/scala/konsume/format/JsonStaged.scala` | JSON: staged scanner of the bytes (its cursor, `JsonCursor`, is kept) |
 | `core/src/main/scala/konsume/format/Plan.scala` | `demand`: paths used, found by a dry run of `Gen` |
-| `core/src/test/scala/konsume/format/JsonStagedSuite.scala` | JSON decoder checked against circe, incl. invalid documents |
 | `bench/.../CompilationCurveBench.scala`, `MetaspaceProbe.scala`, `bench/compilation-curve.json` | compilation time and Metaspace measurements |
 
 ## How it worked
@@ -47,8 +46,8 @@ The reading plan (`AvroPlan`) is the part the planned engine kept, unchanged.
 | `.user.country` | 309 (189) | 561 (265) | 2 888 (2 268) |
 | `.items[] \| select(. > 50)` | 665 (540) | 940 (493) | 3 501 (2 488) |
 
-JSON, same filter, 10k records (~65 bytes): staged scanner 1 053 µs (416 KB per batch), against
-3 060 µs (17.4 MB) for circe then filter.
+JSON, same filter, 10k records (~65 bytes): staged scanner 1 053 µs (416 KB per batch), planned
+1 404 µs (16 KB, the output buffer), circe then interpreted 3 097 µs (20 MB).
 
 Time to build one program, median in a fresh JVM:
 
@@ -113,5 +112,3 @@ Memory kept, fresh JVM, after a full GC (`MemoryProbe`), heap / Metaspace:
   Short interactive sessions never load the compiler; recycle it to bound the leak.
 - Or reduce the indirect calls of the planned engine: fuse frequent shapes (`and` of two slot
   comparisons, a whole `select` at the root) into single closures.
-- For JSON, the staged scanner (`JsonStaged`, `JsonCursor`) and its tests are a starting point for
-  a planned JSON engine.

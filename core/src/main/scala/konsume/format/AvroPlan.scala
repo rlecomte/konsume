@@ -1,6 +1,7 @@
 package konsume.format
 
 import io.circe.Json
+import konsume.format.Planned.{Demand, Path, PVal}
 import konsume.jq.Runtime
 import org.apache.avro.Schema
 import org.apache.avro.Schema.Type.*
@@ -12,22 +13,6 @@ import scala.jdk.CollectionConverters.*
   * into which slots, which ones to skip, where to stop. Run by [[AvroPlanned]].
   */
 private[format] object AvroPlan:
-
-  type Path = List[String]
-
-  /** The paths a program uses, as a tree: `asValue` when it uses the value itself, not only
-    * some of its fields.
-    */
-  final case class Demand(asValue: Boolean, children: Map[String, Demand]):
-    def valuePaths(prefix: Path): List[Path] =
-      (if asValue then List(prefix) else Nil) ++ children.toList.flatMap((n, d) => d.valuePaths(prefix :+ n))
-
-  object Demand:
-    val empty = Demand(false, Map.empty)
-    def of(paths: Iterable[Path]): Demand = paths.foldLeft(empty)(add)
-    private def add(d: Demand, path: Path): Demand = path match
-      case Nil       => d.copy(asValue = true)
-      case n :: rest => d.copy(children = d.children.updated(n, add(d.children.getOrElse(n, empty), rest)))
 
   enum SlotType:
     case Long, Double, Boolean, Int, Json
@@ -44,18 +29,6 @@ private[format] object AvroPlan:
     case Branch(index: Int, branches: Vector[List[Instr]])
 
   /** Where the value of a path will be, once read. */
-  enum PVal:
-    case PStatic(value: Json)
-    case PLong(slot: Int)
-    case PDouble(slot: Int, isFloat: Boolean)
-    case PBoolean(slot: Int)
-    case PString(off: Int, len: Int)
-    case PJson(slot: Int, rank: Int)
-    case PEnum(slot: Int, symbols: Vector[String])
-    case PChoice(index: Int, branches: Vector[PVal])
-    /** `.name` of a value read entirely: done on its JSON view, when used */
-    case PField(parent: PVal, name: String)
-
   import Instr.*, PVal.*
 
   final class Planner(schemas: ArrayBuffer[Schema]):
