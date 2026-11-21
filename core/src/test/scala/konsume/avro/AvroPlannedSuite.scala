@@ -1,7 +1,5 @@
 package konsume.avro
 
-import io.circe.parser.parse
-import konsume.jq.Runtime
 import konsume.{ConsumeConfig, Engine, PayloadFormat, Pipeline, Record}
 import org.apache.avro.Schema
 import org.apache.avro.Schema.Type.*
@@ -97,7 +95,8 @@ class AvroPlannedSuite extends munit.FunSuite:
         {"name": "u", "type": ["null", "string", "int"]},
         {"name": "xs", "type": {"type": "array", "items": "int"}}]}""")
     val values = List[(String, Any)](
-      "jo" -> null, "jöhn" -> "élan", "" -> 3, "élan" -> "", "nej" -> "€uro€", "€uro€" -> "jo", "ö" -> null
+      "jo" -> null, "jöhn" -> "élan", "" -> 3, "élan" -> "", "nej" -> "€uro€", "€uro€" -> "jo", "ö" -> null,
+      "j😀n" -> "😀😀", "john" -> "a b"
     )
     val batch = values.zipWithIndex.map { case ((str, u), i) =>
       val r = GenericData.Record(schema)
@@ -111,7 +110,9 @@ class AvroPlannedSuite extends munit.FunSuite:
       """select(.s | endswith("n"))""", """select(.s | test("ö"))""", """select(.u | startswith("é"))""",
       """select(.u | endswith("o"))""", """select(.s | startswith(1))""", """select(.u | test("^j"))""",
       """.xs[] | select(. > 4)""", """.xs[] | select(. == 5 or . < 2)""", """.xs[] | select(2 < .)""",
-      """.s | startswith("j")""", """.xs[] | select(. != "a")"""
+      """.s | startswith("j")""", """.xs[] | select(. != "a")""",
+      """select(.s | test("^j.h?n$"))""", """select(.s | test("[a-z]+$"))""", """select(.s | test("\\bn"))""",
+      """select(.s | test("^.{4}$"))""", """select(.s | test("€"))""", """select(.u | test("^.{4}$"))""", """select(.s | test("^$"))"""
     )
     programs.foreach(check(schema, batch, _))
   }

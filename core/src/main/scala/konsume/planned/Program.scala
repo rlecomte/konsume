@@ -203,8 +203,8 @@ final class Program(penv: Map[Path, PVal]):
       case Jq.Test(Jq.Literal(j)) if j.isString =>
         val re = Pattern.compile(j.asString.get)
         o match
-          case Operand.At(PString(off, len)) => Some((f, _) => re.matcher(String(f.bytes, f.int(off), f.int(len), UTF_8)).find())
-          case _                             => Some((f, v) => Runtime.test(x(f, v), re))
+          case Operand.At(pv) => Some(testAt(pv, re, register()))
+          case _              => Some((f, v) => Runtime.test(x(f, v), re))
       case Jq.Test(Jq.Literal(j)) => Some((f, v) => Runtime.test(x(f, v), Runtime.compileRegex(j)))
       case Jq.StartsWith(Jq.Literal(j)) =>
         (o, j.asString) match
@@ -219,6 +219,24 @@ final class Program(penv: Map[Path, PVal]):
             Some((f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd = true))
           case _ => Some((f, v) => Runtime.endsWith(x(f, v), j))
       case _ => None
+
+  /** `test(re)` on a path of the record. A string still in the payload is matched in place by
+    * the frame's [[RegexOnBytes]] (register `r`), other values on their JSON view.
+    */
+  private def testAt(v: PVal, re: Pattern, r: Int): Cond = v match
+    case PString(off, len) =>
+      (f, _) =>
+        var regex = f.regs(r).asInstanceOf[RegexOnBytes]
+        if regex == null then // the first record of this thread
+          regex = RegexOnBytes(re)
+          f.regs(r) = regex
+        regex.find(f.bytes, f.int(off), f.int(len))
+    case PChoice(s, bs) =>
+      val cs = bs.map(testAt(_, re, r)).toArray
+      (f, x) => cs(f.int(s))(f, x)
+    case _ =>
+      val m = materialize(v)
+      (f, _) => Runtime.test(m(f), re)
 
   /** Does the string `bytes[off, off + len)` start (or end) with `lit`? */
   private def bytesAt(bytes: Array[Byte], off: Int, len: Int, lit: Array[Byte], atEnd: Boolean): Boolean =

@@ -107,7 +107,8 @@ class JsonPlannedSuite extends munit.FunSuite:
   private val programs = Corpus.programs ++ List(
     "select(.user.age > 30)", """select(.user.country == "FR")""", ".user.age", ".user", """select(.country == "FR")""",
     ".score", "select(.score < 1)", ".items[]", ".tags[]", "select(.age == 100)", "select(.age < 31)", ".age == 40",
-    "select(.skip)", ".user.age.x"
+    "select(.skip)", ".user.age.x", """select(.name | test("^j.n?e?$"))""", """select(.name | test("^.{1}$"))""",
+    """select(.name | test("é|😀"))""", """select(.user.country | test("R$"))"""
   )
 
   test("corpus documents, every corpus program") {
