@@ -568,6 +568,12 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
         f =>
           val (o, n) = (f.int(off), f.int(len))
           if Ascii.plain(f.bytes, o, n) then Ascii.quoted(f.bytes, o, n) else slow(f)
+      case PSlice(start, len, _) => // a JSON object or array, copied without its spaces
+        val slow = viaJson
+        f =>
+          f.json.reset(0)
+          if f.json.compact(f.bytes, f.int(start), f.int(len)) then f.json.result() else slow(f)
+      case PSized(_, _, Some(whole)) => output(whole)
       case PNumber(_, start, len) => // as written: circe keeps the text of a parsed number
         f => java.util.Arrays.copyOfRange(f.bytes, f.int(start), f.int(start) + f.int(len))
       case PEncoded(pos, cache, _, e) =>

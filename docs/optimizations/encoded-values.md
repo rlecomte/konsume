@@ -1,7 +1,7 @@
-# Avro values written from their bytes
+# Values written from their bytes
 
-**Programs:** an Avro record, array or map emitted whole: `.user`, `select(.age > 30) | .user`,
-`.tags`, `.attributes`.
+**Programs:** an object, an array or a map emitted whole: `.user`, `select(.age > 30) | .user`,
+`.tags`, `.attributes`. Avro first, then JSON ([below](#json)).
 
 ## Before
 
@@ -121,12 +121,68 @@ takes the last value, as the reference has it.
 108 bytes: the record emitted (~48) and its array (`{"age":30,"country":"FR"}`, 25 bytes and the
 array header), plus the output buffer of the batch growing.
 
+## JSON
+
+### Before
+
+An object or an array of a JSON payload emitted whole (`PSlice`: its position in the payload) was
+parsed by circe, then written back with `noSpaces`: 1 115 bytes per record for `.user`.
+
+### What circe changes in a slice
+
+Checked by running circe on slices:
+
+| Case | Payload | circe writes | The copy |
+|---|---|---|---|
+| spaces | `{ "a" : 1 }` | `{"a":1}` | dropped |
+| numbers | `1E2`, `1e+2`, `-0`, `0.10`, `1E400` | the same text | copied |
+| string without `\` | `"émile 😀"` | the same, U+007F to U+009F escaped | `JsonOut.utf8String` |
+| string with `\` | `"\/"`, `"\u0041"`, `"\u001F"` | `"/"`, `"A"`, `"\u001f"` | decoded (`JsonCursor.unescape`), written through circe |
+| ill-formed UTF-8 | `61 E9 62` | `"a\uFFFDb"` | the whole slice through circe |
+| a key seen twice | `{"a":1,"b":2,"a":3}` | `{"a":3,"b":2}` | **copied as it comes** |
+
+### How
+
+`JsonOut.compact(src, off, len)`: the slice was validated when the record was read, so a walk on
+its bytes is enough. Out of a string, spaces are dropped and everything else is copied. At a `"`,
+the closing quote is found (skipping `\x`): without a backslash, `utf8String`; with one,
+`unescape`, then the string through circe (for that string only). On ill-formed UTF-8, nothing is
+written and `compact` answers false: `Program.output` then parses the slice with circe, so that the
+U+FFFD replacements are exactly the reference's.
+
+### A difference, accepted
+
+An object with a key seen twice is copied as it comes: `{"a":1,"b":2,"a":3}`, where circe writes
+`{"a":3,"b":2}`. A reader that keeps the last value (jq, circe, Jackson by default) reads what the
+reference emits; one that keeps the first does not. Detecting them would need the keys of each
+object being written kept on a stack; a payload with keys seen twice is ambiguous at its source,
+and it was judged not worth it.
+
+### Tests
+
+- `JsonPlannedSuite` compares re-encoded outputs byte for byte, except the ones with a key seen
+  twice (found by a small test function), compared by meaning only, as all outputs are.
+- "objects and arrays emitted whole": spaces between tokens and in a string, line breaks,
+  escapes of every kind (a lone surrogate, an escaped key equal to another), raw U+007F to
+  U+009F, numbers of every form, empty and nested objects and arrays, keys seen twice, a
+  document with ill-formed UTF-8.
+- Checked to fail: strings walked as the rest (spaces dropped in them, escapes copied raw), a
+  string with a backslash copied without being decoded, no fallback on ill-formed UTF-8, line
+  breaks between tokens copied.
+
+### Measured
+
+| Program | JSON before | JSON after |
+|---|---|---|
+| `.user` | 3 385 µs, 1 115 B | 1 631 µs, **108 B** |
+
+The time left is mostly reading and validating the payload.
+
 ## Limits
 
-- JSON: `.user` on a JSON payload still parses the slice with circe and writes it back (1 115
-  bytes per record): a copy without spaces would need the same care for duplicate keys, escapes
-  and numbers.
-- bytes, fixed and decimals go through circe (base64, `BigDecimal.toString`).
+- Avro: bytes, fixed and decimals go through circe (base64, `BigDecimal.toString`).
+- JSON: strings with escapes go through circe, and slices with ill-formed UTF-8.
 - A value used several times is decoded once per record, but a value both emitted and used
   otherwise is written from its JSON view.
-- Maps: keys in the order of the payload (above).
+- Avro maps: keys in the order of the payload; JSON objects: keys seen twice copied as they come
+  (above).

@@ -16,7 +16,7 @@ added to avoid that fallback on common shapes of programs.
 | [`startswith` / `endswith` on JSON strings](affix-on-json-strings.md) | `select(.name \| startswith("jo"))` | `2697b5e` |
 | [Two allocations per record, found by profiling](profiling-fixes.md) | every Avro program | `7efbd03` |
 | [Arrays walked element by element](walking-arrays.md) | `.items[] \| select(. > 50)`, `.rs[] \| .b` | `46b7abe` |
-| [Avro values written from their bytes](encoded-values.md) | `.user` (a record, an array, a map) | |
+| [Values written from their bytes](encoded-values.md) | `.user` (an object, an array, a map) | |
 
 ## How it is measured
 
@@ -52,9 +52,9 @@ Planned engine, bytes allocated per record:
 | `select(.name \| startswith("jo"))` | 7 | 7 |
 | `.user.country`, `.user.age`, `.items[0]` | 85 (floor) | 85 (floor) |
 | `.items[] \| select(. > 50)` | 83 (floor) | 83 (floor) |
-| `.user` | 108 (floor) | 1 115 |
+| `.user` | 108 (floor) | 108 (floor) |
 
-`.user` in JSON still builds the JSON view of the object.
+Every program is at its floor.
 
 ## Principles that held for all of them
 

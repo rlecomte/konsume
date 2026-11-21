@@ -69,7 +69,8 @@ from an older schema is `null`.
 - `json/`: the JSON cursor, the reference decoder (circe), and the planned reader. `JsonPlanned`:
   keys come in any order, so each object of interest is scanned and its keys compared as bytes
   with the expected names; the values of the others are skipped without being decoded. A used
-  value is kept as its kind, plus a double or its position in the payload. The whole payload is
+  value is kept as its kind, plus a double or its position in the payload; an object or an array
+  emitted is copied from the payload without its spaces. The whole payload is
   read and validated (the tests check it is rejected exactly when circe rejects it); duplicate
   keys: the last one wins, as in jq.
 
@@ -79,6 +80,8 @@ Known limits:
   checked for its structure only (an invalid enum index in it is not seen);
 - Avro: an emitted map has its keys in the order of the payload; the reference has them in the
   order of a `HashMap` (Apache's reader), so the JSON is the same but the bytes may differ;
+- JSON: an object emitted with a key seen twice is copied as it comes; the reference keeps one
+  key, with the last value (the same JSON for a reader that keeps the last value, as jq does);
 - JSON: invalid UTF-8 is not detected, and strings without escapes are compared as bytes, so the
   result on invalid UTF-8 may differ from the reference.
 
@@ -107,11 +110,12 @@ record). An output other than the record unchanged costs ~75 bytes whatever the 
 | `.user.country`                                    | **310** (85)   | 2 525 (2 156)    | **1 263** (85)  | 3 015 (2 095)    |
 | `.user.age`                                        | **279** (85)   | 2 799 (2 124)    | **1 192** (85)  | 3 024 (2 099)    |
 | `select(.user.age > 30) \| .name`                  | **294** (52)   | 3 174 (2 269)    | **1 335** (52)  | 3 866 (2 111)    |
-| `.user`                                            | **527** (108)  | 3 936 (2 458)    | **3 385** (1 115) | 3 870 (2 245)  |
+| `.user`                                            | **527** (108)  | 3 936 (2 458)    | **1 631** (108) | 3 870 (2 245)    |
 | `.items[0]`                                        | **448** (85)   | 2 807 (2 226)    | **1 190** (85)  | 3 035 (2 089)    |
 | `.items[] \| select(. > 50)`                       | **568** (83)   | 3 583 (2 537)    | **1 618** (83)  | 3 462 (2 324)    |
 
-`.user` in JSON still builds the JSON view of the object.
+Every program is at the floor in both formats: the outputs are written from the payload, no
+JSON view is built.
 
 `MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
 the planned engine keeps ~1 KiB of heap each and loads no class.

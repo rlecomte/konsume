@@ -1,6 +1,7 @@
 package konsume.planned
 
 import io.circe.Json
+import konsume.json.JsonCursor
 
 import java.nio.charset.StandardCharsets.UTF_8
 
@@ -120,6 +121,47 @@ final class JsonOut:
           n += size
         i += size
     byte('"')
+    true
+
+  /** A JSON value of the payload, already validated (`src[off, off + len)`), written without its
+    * spaces: what circe writes for it (numbers keep their text, strings are escaped again), but
+    * for an object with a key seen twice, written as it comes (circe keeps one, with the last
+    * value). False, with nothing written, when a string is not well-formed UTF-8: circe replaces
+    * the ill-formed parts, which the caller must then do.
+    */
+  def compact(src: Array[Byte], off: Int, len: Int): Boolean =
+    val mark = n
+    val end  = off + len
+    var i    = off
+    while i < end do
+      val b = src(i)
+      if b == '"' then
+        var j       = i + 1 // the closing quote
+        var escaped = false
+        while src(j) != '"' do
+          if src(j) == '\\' then
+            escaped = true
+            j += 2
+          else j += 1
+        val ok =
+          if !escaped then utf8String(src, i + 1, j - i - 1)
+          else if wellFormed(src, i + 1, j) then { string(JsonCursor.unescape(src, i + 1, j - i - 1)); true }
+          else false
+        if !ok then
+          n = mark
+          return false
+        i = j + 1
+      else
+        if b != ' ' && b != '\n' && b != '\r' && b != '\t' then byte(b) // a space between tokens: dropped
+        i += 1
+    true
+
+  private def wellFormed(src: Array[Byte], from: Int, until: Int): Boolean =
+    var i = from
+    while i < until do
+      val size = Utf8.length(src, i, until)
+      if size < 0 then return false
+      i += size
     true
 
   /** A string, quoted and escaped as circe does. */

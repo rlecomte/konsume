@@ -33,7 +33,8 @@ class JsonPlannedSuite extends munit.FunSuite:
     def meaning(rs: Vector[Record[String, Array[Byte]]]) =
       rs.map(r => (r.offset, parse(String(r.value, UTF_8)).fold(e => fail(s"invalid output: $e"), identity)))
     // when both re-encode the output, the very same bytes
-    for (x, y) <- actual.zip(expected) if !batch.exists(_.value eq x.value) && !batch.exists(_.value eq y.value) do
+    // (an object with a key seen twice is copied as it comes, circe keeps one: same meaning)
+    for (x, y) <- actual.zip(expected) if !batch.exists(_.value eq x.value) && !batch.exists(_.value eq y.value) && !duplicateKeys(x.value) do
       assertEquals(String(x.value, UTF_8), String(y.value, UTF_8), s"program: $program, record #${x.offset}")
     val (a, e) = (meaning(actual), meaning(expected))
     val same = a.size == e.size && a.zip(e).forall { case ((ao, aj), (eo, ej)) => ao == eo && Runtime.compare(aj, ej) == 0 }
@@ -43,6 +44,34 @@ class JsonPlannedSuite extends munit.FunSuite:
         if x == y then None else Some(s"#$o ${String(batch(o.toInt).value, UTF_8).take(80)}\n    actual: $x\n  expected: $y")
       }
       fail(s"program: $program\n${diff.take(5).mkString("\n")}")
+
+  /** Has an object of this JSON a key seen twice? */
+  private def duplicateKeys(bytes: Array[Byte]): Boolean =
+    val cur = JsonCursor(bytes, 0)
+    def value(): Boolean = cur.kind() match
+      case JsonCursor.Object =>
+        var dup  = false
+        val seen = collection.mutable.Set.empty[String]
+        if cur.beginObject() then
+          var more = true
+          while more do
+            cur.readKey()
+            if !seen.add(JsonCursor.unescape(bytes, cur.keyStart, cur.keyLen)) then dup = true
+            dup = value() || dup
+            more = cur.nextMember()
+        dup
+      case JsonCursor.Array =>
+        var dup = false
+        if cur.beginArray() then
+          var more = true
+          while more do
+            dup = value() || dup
+            more = cur.nextElement()
+        dup
+      case _ =>
+        cur.skipValue()
+        false
+    value()
 
   private val tricky = List(
     // duplicate keys: the last one wins, including for nested objects
@@ -124,6 +153,23 @@ class JsonPlannedSuite extends munit.FunSuite:
       ".[]", ".[] | select(. != 1)", ".xs[] | .ys[] | 1", ".xs[] | .ys[] | .zs[] | true", ".xs[] | .a", "select(.s == \"a\") | .xs[]"
     )
     programs.foreach(check(_, records(docs)))
+  }
+
+  test("objects and arrays emitted whole: copied without spaces, strings escaped as circe does") {
+    val docs = List(
+      "{\"v\":{ \"a\" : [ 1 , 2 ] , \"s\" : \"a  b , c : d\" }}",          // spaces between tokens, and in a string
+      "{\"v\" :\n {\r\n \"a\"\t: 1 ,\"b\":[ ]}\n}",
+      "{\"v\":{\"s\":\"\\/\\u0041\\u001F\\n\\ud83d\\ude00\\u2028\\\"\\\\\"}}", // escapes, rewritten by circe
+      "{\"v\":[\"\\ud800 x\",\"\\u00e9\",\"\\b\\f\\r\\t\"]}",                // a lone surrogate, escapes of circe's own
+      "{\"v\":[\"del \u007f c1 \u0085 \u009f nbsp \u00a0 é 😀\"]}",       // raw U+007F to U+009F: escaped by circe
+      "{\"v\":[1E2,1e+2,-0,-0.0,0.10,1.5e-07,12345678901234567890123,1E400,0,true,false,null]}",
+      "{\"v\":{}}", "{\"v\":[]}", "{\"v\":{\"a\":{\"b\":[{},[],[[]],{\"c\":[{}]}]}}}",
+      "{\"v\":{\"a\":1,\"a\":{\"b\":2,\"b\":3}}}",                            // keys seen twice: copied as they come
+      "{\"v\":{\"k\\u0065y\":1,\"key\":2}}"                                   // the same key, once escaped
+    )
+    val invalid = "{\"v\":{\"s\":\"a".getBytes(UTF_8) ++ Array(0xe9.toByte) ++ "b\",\"t\":[1, 2]}}".getBytes(UTF_8)
+    val batch   = records(docs) :+ Record("t", 0, docs.size.toLong, 0L, "k", invalid)
+    List(".v", "select(.v != null) | .v", ".v.a", ".v[]", ".v.a.b", ".v | .a").foreach(check(_, batch))
   }
 
   private val programs = Corpus.programs ++ List(
