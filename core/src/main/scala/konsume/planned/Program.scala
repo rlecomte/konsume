@@ -208,16 +208,12 @@ final class Program(penv: Map[Path, PVal]):
       case Jq.Test(Jq.Literal(j)) => Some((f, v) => Runtime.test(x(f, v), Runtime.compileRegex(j)))
       case Jq.StartsWith(Jq.Literal(j)) =>
         (o, j.asString) match
-          case (Operand.At(PString(off, len)), Some(s)) =>
-            val lit = s.getBytes(UTF_8)
-            Some((f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd = false))
-          case _ => Some((f, v) => Runtime.startsWith(x(f, v), j))
+          case (Operand.At(pv), Some(s)) => Some(affixAt(pv, j, s.getBytes(UTF_8), atEnd = false))
+          case _                         => Some((f, v) => Runtime.startsWith(x(f, v), j))
       case Jq.EndsWith(Jq.Literal(j)) =>
         (o, j.asString) match
-          case (Operand.At(PString(off, len)), Some(s)) =>
-            val lit = s.getBytes(UTF_8)
-            Some((f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd = true))
-          case _ => Some((f, v) => Runtime.endsWith(x(f, v), j))
+          case (Operand.At(pv), Some(s)) => Some(affixAt(pv, j, s.getBytes(UTF_8), atEnd = true))
+          case _                         => Some((f, v) => Runtime.endsWith(x(f, v), j))
       case _ => None
 
   /** `test(re)` on a path of the record. A string still in the payload is matched in place by
@@ -237,6 +233,18 @@ final class Program(penv: Map[Path, PVal]):
     case _ =>
       val m = materialize(v)
       (f, _) => Runtime.test(m(f), re)
+
+  /** `startswith(j)` (or `endswith`) on a path of the record: a string still in the payload is
+    * matched as UTF-8 bytes (`lit`), other values on their JSON view.
+    */
+  private def affixAt(v: PVal, j: Json, lit: Array[Byte], atEnd: Boolean): Cond = v match
+    case PString(off, len) => (f, _) => bytesAt(f.bytes, f.int(off), f.int(len), lit, atEnd)
+    case PChoice(s, bs) =>
+      val cs = bs.map(affixAt(_, j, lit, atEnd)).toArray
+      (f, x) => cs(f.int(s))(f, x)
+    case _ =>
+      val m = materialize(v)
+      if atEnd then (f, _) => Runtime.endsWith(m(f), j) else (f, _) => Runtime.startsWith(m(f), j)
 
   /** Does the string `bytes[off, off + len)` start (or end) with `lit`? */
   private def bytesAt(bytes: Array[Byte], off: Int, len: Int, lit: Array[Byte], atEnd: Boolean): Boolean =

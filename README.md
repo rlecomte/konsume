@@ -91,17 +91,18 @@ record). An output other than the record unchanged costs ~75 bytes whatever the 
 | program                                            | Avro planned   | Avro interpreted | JSON planned    | JSON interpreted |
 |----------------------------------------------------|---------------:|-----------------:|----------------:|-----------------:|
 | `select(.user.age > 30 and .user.country == "FR")` | **336** (1.7)  | 3 014 (2 251)    | **1 391** (1.7) | 3 075 (2 033)    |
-| `select(.name \| test("^jo"))`                     | **439** (192)  | 3 222 (2 662)    | **1 392** (224) | 3 697 (2 489)    |
+| `select(.name \| test("^jo"))`                     | **330** (7)    | 3 222 (2 662)    | **1 263** (7)   | 3 697 (2 489)    |
+| `select(.name \| startswith("jo"))`                | **190** (7)    |                  | **1 138** (7)   |                  |
 | `select(.name == .user.country)`                   | **318** (0)    | 2 656 (2 031)    | **1 303** (0)   | 2 952 (1 886)    |
 | `select(.items \| length > 2)`                     | **517** (3)    | 2 476 (2 011)    | **1 214** (3)   | 2 873 (1 909)    |
 | `.user.country`                                    | **310** (85)   | 2 525 (2 156)    | **1 263** (85)  | 3 015 (2 095)    |
 | `.user.age`                                        | **279** (85)   | 2 799 (2 124)    | **1 192** (85)  | 3 024 (2 099)    |
 | `select(.user.age > 30) \| .name`                  | **294** (52)   | 3 174 (2 269)    | **1 335** (52)  | 3 866 (2 111)    |
 | `.user`                                            | **1 705** (843) | 3 936 (2 458)   | **3 385** (1 115) | 3 870 (2 245)  |
-| `.items[0]`                                        | **1 047** (522) | 2 807 (2 226)   | **2 152** (854) | 3 035 (2 089)    |
+| `.items[0]`                                        | **448** (85)   | 2 807 (2 226)    | **1 190** (85)  | 3 035 (2 089)    |
 | `.items[] \| select(. > 50)`                       | **968** (509)  | 3 583 (2 537)    | **2 299** (911) | 3 462 (2 324)    |
 
-The last three still build the JSON view of a whole record or array.
+`.user` and `.items[]` still build the JSON view of a whole record or array.
 
 `MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
 the planned engine keeps ~1 KiB of heap each and loads no class.

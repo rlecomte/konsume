@@ -22,6 +22,7 @@ class ShapesBench:
     Array(
       "filter",        // comparisons of paths with literals
       "regex",         // test() with a literal regex
+      "prefix",        // startswith() with a literal
       "compare2",      // comparison between two paths
       "length",        // length of an array
       "project",       // a string field
@@ -61,6 +62,7 @@ object ShapesBench:
   val programs: Map[String, String] = Map(
     "filter"        -> """select(.user.age > 30 and .user.country == "FR")""",
     "regex"         -> """select(.name | test("^jo"))""",
+    "prefix"        -> """select(.name | startswith("jo"))""",
     "compare2"      -> """select(.name == .user.country)""",
     "length"        -> """select(.items | length > 2)""",
     "project"       -> ".user.country",
