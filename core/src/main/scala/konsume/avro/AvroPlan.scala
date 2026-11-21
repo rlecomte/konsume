@@ -1,7 +1,7 @@
 package konsume.avro
 
 import io.circe.Json
-import konsume.planned.{Demand, Path, PVal}
+import konsume.planned.{Demand, Path, PVal, Step}
 import konsume.jq.Runtime
 import org.apache.avro.Schema
 import org.apache.avro.Schema.Type.*
@@ -27,8 +27,15 @@ private[avro] object AvroPlan:
     case ReadJson(slot: Int, schema: Int)
     /** the number of elements of an array or a map, skipped */
     case ReadCount(slot: Int, schema: Int)
+    /** some elements of an array (`.items[0]`), by increasing index, the others skipped; stops
+      * after the last one unless `toEnd`
+      */
+    case Elements(wanted: Vector[Wanted], schema: Int, toEnd: Boolean)
     case Skip(schema: Schema)
     case Branch(index: Int, branches: Vector[List[Instr]])
+
+  /** Element `index` of an array: read by `read`; slot `found` says whether the array had it. */
+  final case class Wanted(index: Int, found: Int, read: List[Instr])
 
   /** Where the value of a path will be, once read. */
   import Instr.*, PVal.*
@@ -57,6 +64,8 @@ private[avro] object AvroPlan:
           val env      = d.valuePaths(prefix).map(p => p -> PChoice(index, branches.map(_._2(p)))).toMap
           (List(ReadIndex(index), Branch(index, branches.map(_._1))), env)
         case RECORD if !d.asValue && !d.length => record(schema, prefix, d.children, needEnd)
+        case ARRAY if !d.asValue && !d.length && d.children.nonEmpty && d.children.keys.forall(_.isInstanceOf[Step.At]) =>
+          elements(schema, prefix, d.children, needEnd)
         case ARRAY | MAP if d.lengthOnly => // `length`: counted, not read
           val s = slot(SlotType.Long)
           (List(ReadCount(s, schemaRef(schema))), Map(prefix -> PSized(s, rankOf(schema), None)))
@@ -64,24 +73,44 @@ private[avro] object AvroPlan:
           val (instrs, v) = read(schema)
           (instrs, derived(v, prefix, d))
 
-    private def record(schema: Schema, prefix: Path, children: Map[String, Demand], needEnd: Boolean) =
+    private def record(schema: Schema, prefix: Path, children: Map[Step, Demand], needEnd: Boolean) =
       val fields = schema.getFields.asScala.toVector
-      val last   = fields.lastIndexWhere(f => children.contains(f.name))
+      val last   = fields.lastIndexWhere(f => children.contains(Step.Key(f.name)))
       val limit  = if needEnd then fields.size - 1 else last // stop after the last needed field
       val instrs = List.newBuilder[Instr]
       var env    = Map.empty[Path, PVal]
       for i <- 0 to limit do
         val f = fields(i)
-        children.get(f.name) match
+        children.get(Step.Key(f.name)) match
           case Some(d) =>
-            val (is, e) = value(f.schema, prefix :+ f.name, d, needEnd || i < limit)
+            val (is, e) = value(f.schema, prefix :+ Step.Key(f.name), d, needEnd || i < limit)
             instrs ++= is
             env ++= e
           case None => instrs += Skip(f.schema)
-      // a field the writer schema does not have is null, and so is everything under it
-      for (name, d) <- children if schema.getField(name) == null do
-        env ++= d.valuePaths(prefix :+ name).map(_ -> PStatic(Json.Null))
+      for (step, d) <- children do
+        step match
+          // a field the writer schema does not have is null, and so is everything under it
+          case Step.Key(name) if schema.getField(name) == null =>
+            env ++= d.valuePaths(prefix :+ step).map(_ -> PStatic(Json.Null))
+          // `.user[0]`: a record is an object, it has no elements
+          case Step.At(_) =>
+            env ++= d.valuePaths(prefix :+ step).map(_ -> PFail("Cannot index object with number"))
+          case _ => ()
       (instrs.result(), env)
+
+    /** `.items[0]`, `.items[2].x`: only these elements are read, each into its own slots. */
+    private def elements(schema: Schema, prefix: Path, children: Map[Step, Demand], needEnd: Boolean) =
+      val element = schema.getElementType
+      var env     = Map.empty[Path, PVal]
+      val wanted = children.toVector.collect { case (s @ Step.At(i), d) => (i, s, d) }.sortBy(_._1).map { (i, s, d) =>
+        val found = slot(SlotType.Boolean)
+        // the walk goes on after the element: it must be read to its end
+        val (instrs, e) = value(element, prefix :+ s, d, needEnd = true)
+        // an array too short: the element is null, and so is everything under it
+        env ++= e.map((p, v) => p -> PChoice(found, Vector(PStatic(Json.Null), v)))
+        Wanted(i, found, instrs)
+      }
+      (List(Elements(wanted, schemaRef(element), toEnd = needEnd)), env)
 
     private def read(schema: Schema): (List[Instr], PVal) = schema.getType match
       case BOOLEAN    => val s = slot(SlotType.Boolean); (List(ReadBoolean(s)), PBoolean(s))

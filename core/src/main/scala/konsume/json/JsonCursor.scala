@@ -150,25 +150,33 @@ final class JsonCursor(var bytes: Array[Byte], var pos: Int):
     skipWs()
     if pos != bytes.length then fail("trailing characters")
 
-  /** At '[': skips (and validates) the array, returns its number of elements. */
-  def countArray(): Long =
+  /** At '[': consumes it; false (and consumes the ']') for an empty array. */
+  def beginArray(): Boolean =
     pos += 1
     skipWs()
     if bytes(pos) == ']' then
       pos += 1
-      0L
-    else
-      var n    = 0L
+      false
+    else true
+
+  /** After an element: true at ',' (consumed), false at ']' (consumed). */
+  def nextElement(): Boolean =
+    skipWs()
+    bytes(pos) match
+      case ',' => pos += 1; true
+      case ']' => pos += 1; false
+      case c   => fail(s"unexpected '${c.toChar}'")
+
+  /** At '[': skips (and validates) the array, returns its number of elements. */
+  def countArray(): Long =
+    var n = 0L
+    if beginArray() then
       var more = true
       while more do
         skipValue()
         n += 1
-        skipWs()
-        bytes(pos) match
-          case ',' => pos += 1
-          case ']' => pos += 1; more = false
-          case c   => fail(s"unexpected '${c.toChar}'")
-      n
+        more = nextElement()
+    n
 
   /** Skips (and validates) the value at the cursor. Iterative: no stack overflow on deep input. */
   def skipValue(): Unit =

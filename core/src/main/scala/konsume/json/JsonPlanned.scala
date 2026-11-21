@@ -2,7 +2,7 @@ package konsume.json
 
 import io.circe.Json
 import konsume.Record
-import konsume.planned.{Demand, Frame, PVal, Path, Planned}
+import konsume.planned.{Demand, Frame, PVal, Path, Planned, Step}
 import konsume.jq.{Jq, Runtime}
 
 import java.nio.charset.StandardCharsets.UTF_8
@@ -56,7 +56,8 @@ object JsonPlanned:
 
   /** A path the program uses, and the slots holding what the scan found there: its kind always,
     * its number and position only when the program uses the value itself (or its length), the
-    * number of elements of an array when it uses its length.
+    * number of elements of an array when it uses its length. Below it, the fields (`children`)
+    * and the array elements (`elements`, by increasing index) the program uses.
     */
   private final class Node(
       val asValue: Boolean,
@@ -66,20 +67,29 @@ object JsonPlanned:
       val len: Int,
       val count: Int,
       val lengthOnly: Boolean,
-      val children: Array[Child]
+      val children: Array[Child],
+      val elements: Array[Element]
   ):
-    /** The kinds of everything below: forgotten when the key is seen again. */
-    val descendantKinds: Array[Int] = children.flatMap(c => c.node.kind +: c.node.descendantKinds)
+    /** The kinds of everything below: reset to null before reading a container, so that nothing
+      * is left from a key seen before (duplicate keys) nor from an array too short.
+      */
+    val descendantKinds: Array[Int] =
+      children.flatMap(c => c.node.kind +: c.node.descendantKinds) ++
+        elements.flatMap(e => e.node.kind +: e.node.descendantKinds)
 
   private final class Child(val name: String, val utf8: Array[Byte], val node: Node)
+  private final class Element(val index: Int, val node: Node)
 
   private def node(d: Demand, slot: () => Int): Node =
     val asValue              = d.asValue || d.length
     val kind                 = slot()
     val (number, start, len) = if asValue then (slot(), slot(), slot()) else (-1, -1, -1)
     val count                = if d.length then slot() else -1
-    val children             = d.children.toArray.map((name, cd) => Child(name, name.getBytes(UTF_8), node(cd, slot)))
-    Node(asValue, kind, number, start, len, count, d.lengthOnly, children)
+    val children = d.children.toArray.collect { case (Step.Key(name), cd) =>
+      Child(name, name.getBytes(UTF_8), node(cd, slot))
+    }
+    val elements = d.children.toArray.collect { case (Step.At(i), cd) => Element(i, node(cd, slot)) }.sortBy(_.index)
+    Node(asValue, kind, number, start, len, count, d.lengthOnly, children, elements)
 
   // ------------------------------------------------------------------------------ scanning
 
@@ -87,14 +97,17 @@ object JsonPlanned:
     val k = cur.kind()
     f.nums(n.kind) = k
     if n.children.nonEmpty && k == JsonCursor.Object then
-      // this key may have been seen before: what was found under it is forgotten
-      val ds = n.descendantKinds
-      var i  = 0
-      while i < ds.length do
-        f.nums(ds(i)) = JsonCursor.Null
-        i += 1
+      forgetBelow(n, f)
       val start = cur.pos
       readObject(n, cur, f)
+      if n.asValue then
+        f.nums(n.start) = start
+        f.nums(n.len) = cur.pos - start
+    else if n.elements.nonEmpty && k == JsonCursor.Array then
+      forgetBelow(n, f)
+      val start = cur.pos
+      val count = readArray(n, cur, f)
+      if n.count >= 0 then f.nums(n.count) = count
       if n.asValue then
         f.nums(n.start) = start
         f.nums(n.len) = cur.pos - start
@@ -114,6 +127,30 @@ object JsonPlanned:
       else cur.skipValue()
       f.nums(n.start) = start
       f.nums(n.len) = cur.pos - start
+
+  /** What was found below `n` before (a key seen twice, the previous array) is forgotten. */
+  private def forgetBelow(n: Node, f: Frame): Unit =
+    val ds = n.descendantKinds
+    var i  = 0
+    while i < ds.length do
+      f.nums(ds(i)) = JsonCursor.Null
+      i += 1
+
+  /** Reads the wanted elements, skips the others; returns the number of elements. */
+  private def readArray(n: Node, cur: JsonCursor, f: Frame): Long =
+    val es = n.elements
+    var i  = 0L // index of the element at the cursor
+    var e  = 0  // the next wanted element
+    if cur.beginArray() then
+      var more = true
+      while more do
+        if e < es.length && es(e).index == i then
+          readValue(es(e).node, cur, f)
+          e += 1
+        else cur.skipValue()
+        i += 1
+        more = cur.nextElement()
+    i
 
   private def readObject(n: Node, cur: JsonCursor, f: Frame): Unit =
     if cur.beginObject() then
@@ -152,15 +189,18 @@ object JsonPlanned:
           )
         )
 
-    // `.parent.name`: null under null (or a missing key), an error under anything but an object
-    def under(v: PVal): PVal =
+    // `.parent.name`, `.parent[i]`: null under null (or a missing key), an error under anything
+    // but an object (for a name) or an array (for an index)
+    def under(container: Int, what: String)(v: PVal): PVal =
       PChoice(
         n.kind,
         Vector.tabulate(8) {
-          case JsonCursor.Null   => PStatic(Json.Null)
-          case JsonCursor.Object => v
-          case _                 => PFail("Cannot index a value that is not an object with a string")
+          case JsonCursor.Null    => PStatic(Json.Null)
+          case `container`        => v
+          case _                  => PFail(s"Cannot index a value that is not $what")
         }
       )
 
-    own ++ n.children.flatMap(c => values(c.node, path :+ c.name).map((p, v) => p -> under(v)))
+    own ++
+      n.children.flatMap(c => values(c.node, path :+ Step.Key(c.name)).map((p, v) => p -> under(JsonCursor.Object, "an object with a string")(v))) ++
+      n.elements.flatMap(e => values(e.node, path :+ Step.At(e.index)).map((p, v) => p -> under(JsonCursor.Array, "an array with a number")(v)))

@@ -91,6 +91,19 @@ class JsonPlannedSuite extends munit.FunSuite:
     List(".a", ".b.c", "select(.n != 1) | .a", ".a | length").foreach(check(_, batch))
   }
 
+  test("array elements: short arrays, duplicate keys, nested arrays, not an array") {
+    val docs = List(
+      """{"xs":[1,2,3]}""", """{"xs":[ 1 , [2, 3] , {"a":4} ]}""", """{"xs":[]}""", """{"xs":[7]}""",
+      """{"xs":[1,2,3],"xs":[9]}""", """{"xs":[9],"xs":[1,2,3]}""", """{"xs":[1,2],"xs":5}""", """{"xs":{"0":1}}""",
+      """{"xs":null}""", """{}""", """{"xs":"abc"}""", """{"xs":[[1,[2,3]],[4]]}""", """{"xs":[{"a":1,"a":2},{"b":[5,6]}]}"""
+    )
+    val programs = List(
+      ".xs[0]", ".xs[1]", ".xs[2]", ".xs[0][1]", ".xs[0][1][0]", ".xs[1].b[1]", ".xs[0].a", "select(.xs[1] > 1)",
+      ".xs[0] == .xs[2]", ".xs[1] | length", "select(.xs[0] != null) | .xs[2]", ".xs[2].a", ".xs[1][0]"
+    )
+    programs.foreach(check(_, records(docs)))
+  }
+
   private val programs = Corpus.programs ++ List(
     "select(.user.age > 30)", """select(.user.country == "FR")""", ".user.age", ".user", """select(.country == "FR")""",
     ".score", "select(.score < 1)", ".items[]", ".tags[]", "select(.age == 100)", "select(.age < 31)", ".age == 40",

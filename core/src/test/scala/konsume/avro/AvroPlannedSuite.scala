@@ -116,6 +116,44 @@ class AvroPlannedSuite extends munit.FunSuite:
     programs.foreach(check(schema, batch, _))
   }
 
+  test("array elements: any shape of blocks, sized blocks, short arrays, a field after") {
+    val schema = AvroFixtures.schema("""
+      {"type": "record", "name": "R", "fields": [
+        {"name": "xs", "type": {"type": "array", "items": "int"}},
+        {"name": "rs", "type": {"type": "array", "items":
+          {"type": "record", "name": "E", "fields": [{"name": "a", "type": "int"}, {"name": "b", "type": "string"}]}}},
+        {"name": "s", "type": "string"}]}""")
+    // Avro written by hand: Apache's writer always writes one block, without its size
+    def long(v: Long): Array[Byte] =
+      val out = java.io.ByteArrayOutputStream()
+      var z   = (v << 1) ^ (v >> 63) // zigzag
+      while (z & ~0x7fL) != 0 do
+        out.write(((z & 0x7f) | 0x80).toInt)
+        z >>>= 7
+      out.write(z.toInt)
+      out.toByteArray
+    def str(x: String)       = { val b = x.getBytes(UTF_8); long(b.length) ++ b }
+    def block(xs: Int*)      = long(xs.size) ++ xs.flatMap(long(_))
+    def sized(xs: Int*)      = { val body = xs.flatMap(long(_)).toArray; long(-xs.size) ++ long(body.length) ++ body }
+    def elem(a: Int, b: String) = long(a) ++ str(b)
+    val rs                   = long(2) ++ elem(1, "x") ++ elem(2, "y") ++ long(0)
+    val arrays = List(
+      block(1, 2, 3) ++ long(0),             // one block
+      block(1) ++ block(2, 3) ++ long(0),    // several blocks
+      sized(1, 2) ++ sized(3, 4) ++ long(0), // sized blocks: those without a wanted element skipped at once
+      sized(7) ++ block(8, 9) ++ long(0),    // both kinds
+      block(5) ++ long(0),                   // too short
+      long(0)                                // empty
+    )
+    val batch = arrays.zipWithIndex.map((xs, i) => Record("t", 0, i.toLong, 0L, "k", Confluent.frame(1, xs ++ rs ++ str("FR")))).toVector
+    val programs = List(
+      ".xs[0]", ".xs[1]", ".xs[2]", ".xs[3]", ".xs[0] == .xs[1]", "select(.xs[0] < .xs[2])",
+      "select(.xs[2] > 2) | .s", """select(.xs[1] != null and .s == "FR")""", ".rs[1].b", ".rs[0].a",
+      "select(.rs[1].a == 2) | .xs[0]", ".rs[5].b", ".xs[0].a"
+    )
+    programs.foreach(check(schema, batch, _))
+  }
+
   test("truncated and corrupted payloads are skipped") {
     val schema = AvroFixtures.schema("""
       {"type": "record", "name": "R", "fields": [{"name": "s", "type": "string"}, {"name": "i", "type": "int"}]}""")

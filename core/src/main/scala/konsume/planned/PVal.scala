@@ -12,8 +12,8 @@ enum PVal:
   case PJson(slot: Int, rank: Int)
   case PEnum(slot: Int, symbols: Vector[String])
   case PChoice(index: Int, branches: Vector[PVal])
-  /** `.name` of a value read entirely: done on its JSON view, when used */
-  case PField(parent: PVal, name: String)
+  /** `.name` or `[i]` of a value read entirely: done on its JSON view, when used */
+  case PField(parent: PVal, step: Step)
   /** a JSON number: compared as a double, emitted as written */
   case PNumber(slot: Int, start: Int, len: Int)
   /** a JSON string with escapes: decoded when used */

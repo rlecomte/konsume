@@ -9,7 +9,8 @@ private[planned] object Syntax:
   def pathOf(p: Jq, in: Option[Path]): Option[Path] = p match
     case Jq.Identity    => in
     case Jq.Select(_)   => in
-    case Jq.Field(t, n) => pathOf(t, in).map(_ :+ n)
+    case Jq.Field(t, n) => pathOf(t, in).map(_ :+ Step.Key(n))
+    case Jq.Index(t, i) if i >= 0 => pathOf(t, in).map(_ :+ Step.At(i))
     case Jq.Pipe(l, r)  => pathOf(r, pathOf(l, in))
     case _              => None
 
@@ -18,7 +19,8 @@ private[planned] object Syntax:
     */
   def staticPath(p: Jq, in: Option[Path]): Option[Path] = p match
     case Jq.Identity    => in
-    case Jq.Field(t, n) => staticPath(t, in).map(_ :+ n)
+    case Jq.Field(t, n) => staticPath(t, in).map(_ :+ Step.Key(n))
+    case Jq.Index(t, i) if i >= 0 => staticPath(t, in).map(_ :+ Step.At(i))
     case Jq.Pipe(l, r)  => staticPath(r, staticPath(l, in))
     case _              => None
 

@@ -3,13 +3,24 @@ package konsume.planned
 import konsume.jq.Jq
 import konsume.planned.Syntax.{pathOf, staticPath}
 
-/** A path from the root of the record: `.user.age` is `List("user", "age")`. */
-type Path = List[String]
+/** One step of a path: a field (`.user`) or an element of an array (`[0]`). */
+enum Step:
+  case Key(name: String)
+  case At(index: Int)
+
+  override def toString: String = this match
+    case Key(name) => s".$name"
+    case At(index) => s"[$index]"
+
+/** A path from the root of the record: `.items[0]` is `List(Key("items"), At(0))`. */
+type Path = List[Step]
+
+def show(path: Path): String = if path.isEmpty then "." else path.mkString
 
 /** The paths a program uses, as a tree: `asValue` when it uses the value itself, `length` when
   * it only takes its length (an array can then be counted instead of read).
   */
-final case class Demand(asValue: Boolean, length: Boolean, children: Map[String, Demand]):
+final case class Demand(asValue: Boolean, length: Boolean, children: Map[Step, Demand]):
   /** The paths whose value, or only length, is used: each one gets a [[PVal]]. */
   def valuePaths(prefix: Path): List[Path] =
     (if asValue || length then List(prefix) else Nil) ++ children.toList.flatMap((n, d) => d.valuePaths(prefix :+ n))
@@ -45,7 +56,7 @@ object Demand:
     case Jq.Length                              => in.map(Use(_, lengthOnly = true)).toList
     case Jq.Not                                 => in.map(value).toList
     case Jq.Field(t, _)                         => if staticPath(p, in).isDefined then Nil else consume(t, in)
-    case Jq.Index(t, _)                         => consume(t, in)
+    case Jq.Index(t, _)                         => if staticPath(p, in).isDefined then Nil else consume(t, in)
     case Jq.Iterate(t)                          => consume(t, in)
     case Jq.Pipe(l, r)                          => uses(l, in) ++ uses(r, pathOf(l, in))
     case Jq.Compare(_, l, r)                    => consume(l, in) ++ consume(r, in)

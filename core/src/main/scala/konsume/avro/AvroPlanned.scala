@@ -78,6 +78,8 @@ object AvroPlanned:
         cur.skip(n)
     case ReadJson(s, k)  => val schema = schemas(k); (cur, f) => f.refs(s) = AvroRuntime.readJson(cur, schema)
     case ReadCount(s, k) => val schema = schemas(k); (cur, f) => f.nums(s) = AvroRuntime.count(cur, schema)
+    case Elements(wanted, k, toEnd) =>
+      ElementsStep(wanted.map(_.index).toArray, wanted.map(_.found).toArray, wanted.map(w => steps(w.read, schemas)).toArray, skip(schemas(k)), toEnd)
     case Skip(schema)   => skip(schema)
     case Branch(s, bs) =>
       val branches = bs.map(steps(_, schemas)).toArray
@@ -85,6 +87,38 @@ object AvroPlanned:
         val i = f.int(s)
         if i < 0 || i >= branches.length then throw DecodeError("invalid union index")
         branches(i)(cur, f)
+
+  /** Walks an array block by block (`count, elements..., count, elements..., 0`), reads the
+    * wanted elements (`indices`, increasing) and skips the others. A negative count is followed
+    * by the size of the block in bytes: a block with no wanted element is then skipped at once.
+    */
+  private final class ElementsStep(indices: Array[Int], found: Array[Int], reads: Array[Step], skipElement: Step, toEnd: Boolean)
+      extends Step:
+    def apply(cur: AvroCursor, f: Frame): Unit =
+      var j = 0
+      while j < found.length do
+        f.nums(found(j)) = 0L
+        j += 1
+      var next = 0  // the next wanted element
+      var i    = 0L // index of the next element in the array
+      var n    = cur.readLong()
+      while n != 0 && (toEnd || next < indices.length) do
+        val sized = n < 0
+        if sized then n = -n
+        val size = if sized then cur.readLong() else -1L
+        if sized && (next == indices.length || indices(next) >= i + n) then cur.skip(size.toInt) // nothing wanted in it
+        else
+          var b = 0L
+          while b < n do
+            if next < indices.length && indices(next) == i + b then
+              reads(next)(cur, f)
+              f.nums(found(next)) = 1L
+              next += 1
+              if next == indices.length && !toEnd then return // the last one: stop here
+            else skipElement(cur, f)
+            b += 1
+        i += n
+        n = cur.readLong()
 
   /** Fixed-size and string skips inline; anything bigger by the generic schema walker. */
   private def skip(schema: Schema): Step =

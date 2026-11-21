@@ -53,7 +53,7 @@ final class Program(penv: Map[Path, PVal]):
     case Undecoded(p) =>
       materializers.get(p) match
         case Some(m) => m(f)
-        case None    => throw IllegalStateException(s"internal error: path .${p.mkString(".")} was not decoded")
+        case None    => throw IllegalStateException(s"internal error: path ${show(p)} was not decoded")
 
   val emit: Sink = (f, v) =>
     if v eq Root then f.out += f.record
@@ -77,16 +77,12 @@ final class Program(penv: Map[Path, PVal]):
 
     case Jq.Field(t, name) =>
       staticPath(p, in) match
-        case Some(path) if (k eq emit) && penv.contains(path) =>
-          // the output of the program: written from the slots, without building a `Json`
-          val w = output(penv(path))
-          (f, _) => f.out += f.record.copy(value = w(f))
-        case Some(path) =>
-          materializers.get(path) match
-            case Some(m) => (f, _) => k(f, m(f))
-            case None    => val u = Undecoded(path); (f, _) => k(f, u) // only navigated through
-        case None => node(t, in, (f, x) => k(f, Runtime.field(json(x, f), name)))
-    case Jq.Index(t, i) => node(t, in, (f, x) => k(f, Runtime.index(json(x, f), i)))
+        case Some(path) => atPath(path, k)
+        case None       => node(t, in, (f, x) => k(f, Runtime.field(json(x, f), name)))
+    case Jq.Index(t, i) =>
+      staticPath(p, in) match
+        case Some(path) => atPath(path, k)
+        case None       => node(t, in, (f, x) => k(f, Runtime.index(json(x, f), i)))
     case Jq.Iterate(t) =>
       node(t, in, (f, x) =>
         val it = Runtime.iterate(json(x, f))
@@ -121,6 +117,17 @@ final class Program(penv: Map[Path, PVal]):
       withInput(prefix, in)((f, v, x) => k(f, Runtime.bool(Runtime.startsWith(json(v, f), json(x, f)))))
     case Jq.EndsWith(suffix) =>
       withInput(suffix, in)((f, v, x) => k(f, Runtime.bool(Runtime.endsWith(json(v, f), json(x, f)))))
+
+  /** The value at a path of the record, passed to `k`. */
+  private def atPath(path: Path, k: Sink): Sink =
+    if (k eq emit) && penv.contains(path) then
+      // the output of the program: written from the slots, without building a `Json`
+      val w = output(penv(path))
+      (f, _) => f.out += f.record.copy(value = w(f))
+    else
+      materializers.get(path) match
+        case Some(m) => (f, _) => k(f, m(f))
+        case None    => val u = Undecoded(path); (f, _) => k(f, u) // only navigated through
 
   /** `body(input, x)` for each output `x` of `arg` on the input. */
   private def withInput(arg: Jq, in: Option[Path])(body: (Frame, AnyRef, AnyRef) => Unit): Sink =
@@ -337,9 +344,12 @@ final class Program(penv: Map[Path, PVal]):
     case PChoice(s, branches) =>
       val bs = branches.map(materialize).toArray
       f => bs(f.int(s))(f)
-    case PField(parent, name) =>
+    case PField(parent, Step.Key(name)) =>
       val m = materialize(parent)
       f => Runtime.field(m(f), name)
+    case PField(parent, Step.At(i)) =>
+      val m = materialize(parent)
+      f => Runtime.index(m(f), i)
     case PNumber(_, start, len) => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
     case PText(start, len)      => f => Json.fromString(JsonCursor.unescape(f.bytes, f.int(start), f.int(len)))
     case PSlice(start, len, _)  => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
