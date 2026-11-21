@@ -1,7 +1,7 @@
-# Two allocations per record, found by profiling
+# Found by profiling
 
-**Programs:** every Avro program (the first one), every Avro program that skips a record field
-(the second one).
+**Programs:** every Avro program (the first and the third), every Avro program that skips a
+record field (the second one).
 
 ## How they were found
 
@@ -35,6 +35,26 @@ is allocated at each call. Now an index loop over the fields.
 
 `select(.items | length > 2)`, Avro: 19.3 → **3.3 bytes per record**. `.items[0]` and
 `.items[] | ...` skip `user` too.
+
+## 3. Two lookups per record: the frame, the program of the schema
+
+Found later, with a CPU profile (`bench/profile.sh projectObj Avro`): about 40 % of the time of
+`.user` in Avro went into two lookups made for each record.
+
+- `ThreadLocal.get()` in `Planned.build`, to find the frame of the thread (19 %). A `ThreadLocal`
+  is a slot in a hash table of the thread; here the slot was taken by another one and Java probed
+  the next slots (`getEntryAfterMiss`). Whether it does depends on how many `ThreadLocal`s exist
+  and in which order they were created: nothing showed in JSON.
+- `ConcurrentHashMap.get` in `Pipeline`, to find the program built for the schema id (20 %).
+
+Both are now looked up once per batch: `Planned.Fn.local()` gives the engine of the calling
+thread (its frame included), used for the whole batch; the Avro pipeline keeps the program of the
+last schema id seen in the batch, and looks it up again only when the id changes. A batch is run
+by one thread, so nothing is shared. Tested with a batch alternating two schemas.
+
+Measured (`bench/compare.sh`, results `20261121-2233-e75eaf9` → `20261121-2244-b1e6163-dirty`):
+every Avro program 15 to 27 % faster (`.items[] | select(. > 50)`: 717 → 525 µs, `.user`: 517 →
+435 µs); JSON within the noise.
 
 ## Lesson
 

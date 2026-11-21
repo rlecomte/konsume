@@ -83,6 +83,20 @@ class BytesPipelineSuite extends munit.FunSuite:
       assertEquals(out.map(r => json(r.value)), Vector(Json.fromString("john"), Json.fromString("jane")))
     }
 
+    test(s"$engine: Avro, schemas alternating within a batch") {
+      val batch = records(
+        AvroFixtures.encode(1, event(v1, "a", 1, "FR")),
+        AvroFixtures.encode(2, event(v2, "b", 2, "FR", vip = true)),
+        AvroFixtures.encode(1, event(v1, "c", 3, "FR")),
+        Confluent.frame(99, Array[Byte](0)), // unknown: the next record, schema 1 again
+        AvroFixtures.encode(1, event(v1, "d", 4, "FR")),
+        AvroFixtures.encode(2, event(v2, "e", 5, "FR"))
+      )
+      // `vip` is null in schema 1 (no such field), a boolean in schema 2
+      val out = run(PayloadFormat.Avro, ".vip", engine, batch).map(r => r.offset -> json(r.value).noSpaces)
+      assertEquals(out, Vector(0L -> "null", 1L -> "true", 2L -> "null", 4L -> "null", 5L -> "false"))
+    }
+
     test(s"$engine: JSON filter and transformation, malformed values skipped") {
       val kept = run(PayloadFormat.Json, "select(.user.age > 18)", engine, jsonBatch)
       assertEquals(kept.map(_.offset), Vector(0L, 3L))

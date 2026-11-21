@@ -94,8 +94,9 @@ object Pipeline:
     val f = JsonPlanned.compile(program)
     batch =>
       val out = ArrayBuffer.empty[Record[Any, Array[Byte]]]
+      val run = f.local()
       batch.foreach { r =>
-        try f(r, out)
+        try run(r, out)
         catch case _: DecodeError | _: IndexOutOfBoundsException => () // undecodable: skipped
       }
       // JsonPlanned only knows Record[Any, _]: it copies keys, never looks at them.
@@ -106,15 +107,21 @@ object Pipeline:
     val bySchemaId = ConcurrentHashMap[Int, planned.Planned.Fn]()
     batch =>
       val out = ArrayBuffer.empty[Record[Any, Array[Byte]]]
+      // the records of a batch nearly always have the same schema: the last one is kept
+      var lastId  = 0
+      var lastRun = null.asInstanceOf[planned.Planned.Run]
       batch.foreach { r =>
         try
           val id = Confluent.schemaId(r.value)
-          var f  = bySchemaId.get(id)
-          if f == null then
-            val schema = schemas(id).getOrElse(throw DecodeError(s"unknown schema id $id"))
-            f = AvroPlanned.compile(program, schema)
-            bySchemaId.put(id, f)
-          f(r, out)
+          if lastRun == null || id != lastId then
+            var f = bySchemaId.get(id)
+            if f == null then
+              val schema = schemas(id).getOrElse(throw DecodeError(s"unknown schema id $id"))
+              f = AvroPlanned.compile(program, schema)
+              bySchemaId.put(id, f)
+            lastRun = f.local()
+            lastId = id
+          lastRun(r, out)
         catch case _: DecodeError | _: IndexOutOfBoundsException => () // undecodable: skipped
       }
       // AvroPlanned only knows Record[Any, _]: it copies keys, never looks at them.

@@ -14,7 +14,7 @@ added to avoid that fallback on common shapes of programs.
 | [Array indexes in paths](array-index.md) | `.items[0]`, `.rs[1].b` | `e0e102c` |
 | [`test()` without allocating](regex-on-bytes.md) | `select(.name \| test("^jo"))` | `10975a2` |
 | [`startswith` / `endswith` on JSON strings](affix-on-json-strings.md) | `select(.name \| startswith("jo"))` | `2697b5e` |
-| [Two allocations per record, found by profiling](profiling-fixes.md) | every Avro program | `7efbd03` |
+| [Found by profiling](profiling-fixes.md) | every Avro program | `7efbd03` and after |
 | [Arrays walked element by element](walking-arrays.md) | `.items[] \| select(. > 50)`, `.rs[] \| .b` | `46b7abe` |
 | [Values written from their bytes](encoded-values.md) | `.user` (an object, an array, a map) | |
 

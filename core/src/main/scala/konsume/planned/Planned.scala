@@ -14,19 +14,30 @@ import scala.collection.mutable.ArrayBuffer
   */
 object Planned:
 
-  type Fn = (Record[Any, Array[Byte]], ArrayBuffer[Record[Any, Array[Byte]]]) => Unit
+  /** Runs the program on one record, its outputs added to the buffer. */
+  type Run = (Record[Any, Array[Byte]], ArrayBuffer[Record[Any, Array[Byte]]]) => Unit
+
+  /** A program built (for one schema, in Avro). */
+  trait Fn:
+    /** The engine of the calling thread, with its frame: to be used by this thread only, for a
+      * batch. Looked up once per batch, not per record: a `ThreadLocal` lookup can cost as much
+      * as running a simple program.
+      */
+    def local(): Run
 
   /** The engine for one program: `read` fills the slots of a frame from the record's bytes,
     * then the program runs on them. One frame per thread, reused from record to record: running
     * allocates nothing of its own.
     */
   def build[F <: Frame](program: Jq, penv: Map[Path, PVal], walks: Map[Path, Walk], newFrame: Int => F)(read: F => Unit): Fn =
-    val p      = Program(penv, walks)
-    val run    = p.node(program, Some(Nil), p.emit)
-    val regs   = p.registers
-    val frames = ThreadLocal.withInitial(() => newFrame(regs))
+    val p    = Program(penv, walks)
+    val run  = p.node(program, Some(Nil), p.emit)
+    val regs = p.registers
+    val runs = ThreadLocal.withInitial[Run](() => runner(newFrame(regs), read, run))
+    () => runs.get()
+
+  private def runner[F <: Frame](f: F, read: F => Unit, run: Sink): Run =
     (record, out) =>
-      val f    = frames.get()
       val mark = out.size
       f.begin(record, out)
       try
