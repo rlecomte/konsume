@@ -24,7 +24,8 @@ private[avro] object AvroPlan:
     case ReadBoolean(slot: Int)
     case ReadIndex(slot: Int)
     case ReadString(off: Int, len: Int)
-    case ReadJson(slot: Int, schema: Int)
+    /** a value left in the payload: its position, and its cache emptied */
+    case ReadEncoded(pos: Int, cache: Int)
     /** the position of an array walked by the program (`.items[]`) */
     case ReadPos(slot: Int)
     /** the number of elements of an array or a map, skipped */
@@ -87,7 +88,7 @@ private[avro] object AvroPlan:
           val s = slot(SlotType.Long)
           (List(ReadCount(s, schemaRef(schema))), Map(prefix -> PSized(s, rankOf(schema), None)))
         case _ =>
-          val (instrs, v) = read(schema)
+          val (instrs, v) = read(schema, needEnd)
           (instrs, derived(v, prefix, d))
 
     private def record(schema: Schema, prefix: Path, children: Map[Step, Demand], needEnd: Boolean) =
@@ -141,7 +142,7 @@ private[avro] object AvroPlan:
       }
       (List(Elements(wanted, schemaRef(element), toEnd = needEnd)), env)
 
-    private def read(schema: Schema): (List[Instr], PVal) = schema.getType match
+    private def read(schema: Schema, needEnd: Boolean): (List[Instr], PVal) = schema.getType match
       case BOOLEAN    => val s = slot(SlotType.Boolean); (List(ReadBoolean(s)), PBoolean(s))
       case INT | LONG => val s = slot(SlotType.Long); (List(ReadLong(s)), PLong(s))
       case FLOAT      => val s = slot(SlotType.Double); (List(ReadFloat(s)), PDouble(s, isFloat = true))
@@ -154,8 +155,10 @@ private[avro] object AvroPlan:
         val len = slot(SlotType.Int)
         (List(ReadString(off, len)), PString(off, len))
       case _ => // records used as a whole, arrays, maps, bytes, fixed: their JSON view
-        val s = slot(SlotType.Json)
-        (List(ReadJson(s, schemaRef(schema))), PJson(s, rankOf(schema)))
+        // left in the payload, decoded only if used (and skipped only if something after it is)
+        val (pos, cache) = (slot(SlotType.Int), slot(SlotType.Json))
+        val skip         = if needEnd then List(Skip(schema)) else Nil
+        (ReadEncoded(pos, cache) :: skip, PEncoded(pos, cache, rankOf(schema), AvroPlanned.Encoded(schema)))
 
     /** The rank in jq's order of the JSON view of values of `schema` (not null, union, boolean). */
     private def rankOf(schema: Schema): Int = schema.getType match

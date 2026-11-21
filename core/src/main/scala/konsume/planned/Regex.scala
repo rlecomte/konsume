@@ -36,8 +36,38 @@ private[planned] object RegexOnBytes:
   /** A longer string is decoded for its record only: the buffer must not keep it. */
   final val MaxKept = 65536
 
-/** UTF-8 to UTF-16, for well-formed UTF-8 only (Unicode, table 3-7). */
+/** Well-formed UTF-8 (Unicode, table 3-7). */
 private[planned] object Utf8:
+
+  /** The size of the well-formed sequence at `bytes(i)` (1 to 4, ending before `end`), or -1.
+    * The first byte gives the size and the range of the second byte: four ranges are narrower
+    * than 80-BF, to reject overlong encodings (E0, F0), surrogates (ED) and code points above
+    * U+10FFFF (F4).
+    */
+  def length(bytes: Array[Byte], i: Int, end: Int): Int =
+    val b0 = bytes(i) & 0xff
+    if b0 < 0x80 then 1
+    else
+      var size = 0
+      var lo   = 0x80
+      var hi   = 0xbf
+      if b0 >= 0xc2 && b0 <= 0xdf then size = 2
+      else if b0 == 0xe0 then { size = 3; lo = 0xa0 } // not overlong
+      else if b0 == 0xed then { size = 3; hi = 0x9f } // not a surrogate
+      else if b0 >= 0xe1 && b0 <= 0xef then size = 3
+      else if b0 == 0xf0 then { size = 4; lo = 0x90 } // not overlong
+      else if b0 == 0xf4 then { size = 4; hi = 0x8f } // not above U+10FFFF
+      else if b0 >= 0xf1 && b0 <= 0xf3 then size = 4
+      else return -1                                  // 80-C1, F5-FF: never a first byte
+      if i + size > end then return -1                // cut by the end
+      val b1 = bytes(i + 1) & 0xff
+      if b1 < lo || b1 > hi then return -1
+      var k = 2
+      while k < size do
+        val b = bytes(i + k) & 0xff
+        if b < 0x80 || b > 0xbf then return -1
+        k += 1
+      size
 
   /** Decodes `bytes[off, off + len)` into `out` (at least `len` chars): the number of chars, or
     * -1 at the first ill-formed sequence.
@@ -47,34 +77,17 @@ private[planned] object Utf8:
     var i   = off
     var n   = 0
     while i < end do
-      val b0 = bytes(i) & 0xff
-      if b0 < 0x80 then // ASCII: one byte, one char
-        out(n) = b0.toChar
+      val size = length(bytes, i, end)
+      if size < 0 then return -1
+      if size == 1 then // ASCII: one byte, one char
+        out(n) = bytes(i).toChar
         n += 1
-        i += 1
       else
-        // the size of the sequence, and the range of its second byte
-        var size = 0
-        var lo   = 0x80
-        var hi   = 0xbf
-        if b0 >= 0xc2 && b0 <= 0xdf then size = 2
-        else if b0 == 0xe0 then { size = 3; lo = 0xa0 } // not overlong
-        else if b0 == 0xed then { size = 3; hi = 0x9f } // not a surrogate
-        else if b0 >= 0xe1 && b0 <= 0xef then size = 3
-        else if b0 == 0xf0 then { size = 4; lo = 0x90 } // not overlong
-        else if b0 == 0xf4 then { size = 4; hi = 0x8f } // not above U+10FFFF
-        else if b0 >= 0xf1 && b0 <= 0xf3 then size = 4
-        else return -1                                  // 80-C1, F5-FF: never a first byte
-        if i + size > end then return -1                // cut by the end
-        val b1 = bytes(i + 1) & 0xff
-        if b1 < lo || b1 > hi then return -1
         // the code point: the useful bits of each byte, end to end
-        var cp = (b0 & (0xff >> (size + 1))) << 6 | (b1 & 0x3f)
-        var k  = 2
+        var cp = (bytes(i) & (0xff >> (size + 1))) & 0xff
+        var k  = 1
         while k < size do
-          val b = bytes(i + k) & 0xff
-          if b < 0x80 || b > 0xbf then return -1
-          cp = cp << 6 | (b & 0x3f)
+          cp = cp << 6 | (bytes(i + k) & 0x3f)
           k += 1
         if cp >= 0x10000 then // two chars in UTF-16
           out(n) = Character.highSurrogate(cp)
@@ -83,5 +96,5 @@ private[planned] object Utf8:
         else
           out(n) = cp.toChar
           n += 1
-        i += size
+      i += size
     n

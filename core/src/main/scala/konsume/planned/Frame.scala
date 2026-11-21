@@ -15,6 +15,8 @@ class Frame(slots: Int, registers: Int):
   var bytes: Array[Byte]                          = null
   var record: Record[Any, Array[Byte]]            = null
   var out: ArrayBuffer[Record[Any, Array[Byte]]] = null
+  /** Where an output is written as JSON, before being copied into its record. */
+  val json                                        = JsonOut()
 
   def begin(r: Record[Any, Array[Byte]], o: ArrayBuffer[Record[Any, Array[Byte]]]): Unit =
     record = r

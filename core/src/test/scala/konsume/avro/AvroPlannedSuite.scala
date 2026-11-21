@@ -61,6 +61,19 @@ class AvroPlannedSuite extends munit.FunSuite:
     def block(xs: Int*) = long(xs.size) ++ xs.flatMap(long(_))
     def sized(xs: Int*) = { val body = xs.flatMap(long(_)).toArray; long(-xs.size) ++ long(body.length) ++ body }
 
+  /** The same outputs as the reference, as JSON values: keys in any order. */
+  private def checkMeaning(schema: Schema, batch: Vector[Record[String, Array[Byte]]], program: String): Unit =
+    def run(engine: Engine) = Pipeline
+      .forBytes[String](ConsumeConfig(Seq("t"), PayloadFormat.Avro, Some(program), engine), Map(1 -> schema).get)
+      .fold(e => fail(s"$program: $e"), identity)(batch)
+      .map(r => r.offset -> io.circe.parser.parse(String(r.value, UTF_8)).fold(e => fail(s"$program: $e"), identity))
+      .toVector
+    val (actual, expected) = (run(Engine.Planned), run(Engine.Interpreted))
+    assertEquals(actual.map(_._1), expected.map(_._1), program)
+    actual.zip(expected).foreach { case ((o, a), (_, e)) =>
+      assert(konsume.jq.Runtime.compare(a, e) == 0, s"$program, #$o\n  actual: ${a.noSpaces}\nexpected: ${e.noSpaces}")
+    }
+
   private def randomCase(seed: Int) =
     val gen    = Gen(Random(seed))
     val schema = gen.schema()
@@ -203,6 +216,72 @@ class AvroPlannedSuite extends munit.FunSuite:
     // an undecodable record emits nothing, even when some elements were emitted before the
     // corruption is found; corruption after the last field read is not seen (see the README)
     programs.foreach(p => check(schema, batch(good ++ (if p.contains(".rs") then corrupted else corrupted.take(1))), p))
+  }
+
+  test("values emitted whole, written from the bytes: every type, escapes, ill-formed UTF-8, odd maps") {
+    import Hand.*
+    val schema = AvroFixtures.schema("""
+      {"type": "record", "name": "Top", "fields": [
+        {"name": "r", "type": {"type": "record", "name": "All", "fields": [
+          {"name": "f", "type": "float"},
+          {"name": "d", "type": "double"},
+          {"name": "s", "type": "string"},
+          {"name": "m", "type": {"type": "map", "values": "string"}},
+          {"name": "mm", "type": {"type": "map", "values": {"type": "map", "values": "int"}}},
+          {"name": "u", "type": ["null", "int", "string", {"type": "array", "items": ["null", "long"]}]},
+          {"name": "e", "type": {"type": "enum", "name": "E", "symbols": ["A", "B_c"]}},
+          {"name": "b", "type": "bytes"},
+          {"name": "x", "type": {"type": "fixed", "name": "X", "size": 3}},
+          {"name": "dec", "type": {"type": "bytes", "logicalType": "decimal", "precision": 6, "scale": 2}},
+          {"name": "xs", "type": {"type": "array", "items":
+            {"type": "record", "name": "P", "fields": [{"name": "a", "type": "int"}, {"name": "t", "type": "string"}]}}},
+          {"name": "l", "type": "long"},
+          {"name": "big", "type": {"type": "map", "values": "boolean"}},
+          {"name": "empty", "type": {"type": "record", "name": "Empty", "fields": []}}]}},
+        {"name": "n", "type": "int"}]}""")
+    def float(x: Float)   = { val i = java.lang.Float.floatToRawIntBits(x); Array.tabulate(4)(k => (i >>> (8 * k)).toByte) }
+    def double(x: Double) = { val l = java.lang.Double.doubleToRawLongBits(x); Array.tabulate(8)(k => (l >>> (8 * k)).toByte) }
+    def raw(bs: Array[Byte]) = long(bs.length) ++ bs
+    def hex(h: String)       = h.split(' ').map(Integer.parseInt(_, 16).toByte)
+    def map(entries: (Array[Byte], Array[Byte])*) =
+      if entries.isEmpty then long(0) else long(entries.size) ++ entries.flatMap((k, v) => raw(k) ++ v) ++ long(0)
+    def k(s: String) = s.getBytes(UTF_8)
+    def all(
+        f: Float = 1.5f, d: Double = 0.1, s: Array[Byte] = k("john"), m: Array[Byte] = map(k("a") -> str("x")),
+        mm: Array[Byte] = map(k("o") -> map(k("i") -> long(1))), u: Array[Byte] = long(0), e: Int = 1,
+        xs: Array[Byte] = long(1) ++ long(7) ++ str("p") ++ long(0), l: Long = 42L, big: Array[Byte] = long(0)
+    ) =
+      float(f) ++ double(d) ++ raw(s) ++ m ++ mm ++ u ++ long(e) ++ raw(hex("00 FF 10")) ++ hex("41 42 43") ++
+        raw(BigInt(-12345).toByteArray) ++ xs ++ long(l) ++ big
+    val bigMap = map((1 to 70).map(i => k(s"k$i") -> Array[Byte]((i % 2).toByte))*)
+    val payloads = List(
+      all(),
+      all(f = Float.NaN, d = -0.0, s = k("\u0000\n\"\\\u007f\u0085\u00e9\u2028😀/"), m = map(), u = long(2) ++ str("é"), e = 0),
+      all(f = 1e10f, d = 1e22, s = hex("E9 41"), m = map(k("ok") -> str("v"), hex("FF") -> str("w")), u = long(3) ++ long(2) ++ long(0) ++ long(1) ++ long(-5) ++ long(0)),
+      all(f = Float.NegativeInfinity, d = Double.MinPositiveValue, m = map(k("a") -> str("1"), k("b") -> str("2"), k("a") -> str("3"))),
+      all(mm = map(k("o") -> map(k("i") -> long(1), k("i") -> long(2)), k("p") -> map(k("i") -> long(3))), big = bigMap),
+      // sized blocks in a map and in an array of records; a map of maps with the same inner keys
+      all(m = { val body = raw(k("a")) ++ str("1") ++ raw(k("b")) ++ str("2"); long(-2) ++ long(body.length) ++ body ++ long(1) ++ raw(k("c")) ++ str("3") ++ long(0) },
+        mm = map(k("o") -> map(k("i") -> long(1)), k("p") -> map(k("i") -> long(2))),
+        xs = { val body = long(1) ++ str("p") ++ long(2) ++ str("q"); long(-2) ++ long(body.length) ++ body ++ long(0) }, l = Long.MinValue),
+      all(u = long(1) ++ long(-7), l = Long.MaxValue, d = Double.NaN)
+    ).map(_ ++ long(5))
+    // corrupted records, each seen by the programs that read that far (what is skipped is checked
+    // for its structure only, nothing after the last value read is: see the README)
+    val truncated = all().take(20) // in m: f (4 bytes), d (8), s (5), then m
+    val badUnion  = all(u = long(9)) ++ long(5)
+    val badEnum   = all(e = 7) ++ long(5) // seen only when the enum is written
+    // corrupted first: a write cut by an error must leave nothing for the next one
+    def batch(corrupted: Array[Byte]*) =
+      (corrupted.toList ++ payloads).zipWithIndex.map((v, i) => Record("t", 0, i.toLong, 0L, "k", Confluent.frame(1, v))).toVector
+    // the very same bytes
+    List(".r.u", ".r.xs", ".r.empty", ".r.b", ".r.x", ".r.dec", ".r.xs[]").foreach(check(schema, batch(truncated, badUnion), _))
+    check(schema, batch(truncated), ".r.mm.p")
+    // the same JSON: the reference gives the keys of a map in hash order, the engine in the order
+    // of the payload; a key written twice by the engine has the last value, as in the reference
+    List(".r.m", ".r.mm", ".r | .mm", ".r.mm.o", """select(.r.m.a == "x") | .r.m""").foreach(checkMeaning(schema, batch(truncated), _))
+    checkMeaning(schema, batch(truncated, badUnion), ".r.big")
+    List(".r", "select(.n > 0) | .r", "select(.r.l > 0) | .r").foreach(checkMeaning(schema, batch(truncated, badUnion, badEnum), _))
   }
 
   test("truncated and corrupted payloads are skipped") {

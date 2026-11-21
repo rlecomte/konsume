@@ -346,9 +346,11 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
       case PChoice(s, branches) =>
         val bs = branches.map(compareSlot(_, op, y)).toArray
         (f, v) => bs(f.int(s))(f, v)
-      case PJson(s, rank) =>
+      case PEncoded(_, _, rank, _) =>
         if rank != Runtime.rank(y) then byRank(rank)
-        else (f, _) => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
+        else
+          val m = materialize(v)
+          (f, _) => op.test(Runtime.compare(m(f), y))
       case PAny(s) => (f, _) => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
       case PField(_, _) =>
         val m = materialize(v)
@@ -381,7 +383,7 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
     case PLong(_) | PString(_, _) | PEnum(_, _) => const(true)
     case PDouble(s, _)                          => (f, _) => java.lang.Double.isFinite(f.double(s))
     case PBoolean(s)                            => (f, _) => f.nums(s) != 0
-    case PJson(_, rank)                         => const(rank > Runtime.FalseRank)
+    case PEncoded(_, _, rank, _)                => const(rank > Runtime.FalseRank)
     case PAny(s)                                => (f, _) => Runtime.truthy(f.refs(s).asInstanceOf[Json])
     case PChoice(s, branches) =>
       val bs = branches.map(truthy).toArray
@@ -402,7 +404,14 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
     case PDouble(s, false) => f => Json.fromDoubleOrNull(f.double(s))
     case PBoolean(s)       => f => Runtime.bool(f.nums(s) != 0)
     case PString(off, len) => f => Json.fromString(String(f.bytes, f.int(off), f.int(len), UTF_8))
-    case PJson(s, _)       => f => f.refs(s).asInstanceOf[Json]
+    case PEncoded(pos, cache, _, e) =>
+      f =>
+        f.refs(cache) match
+          case j: Json => j // already decoded for this record
+          case _ =>
+            val j = e.json(f, f.int(pos))
+            f.refs(cache) = j
+            j
     case PAny(s)           => f => f.refs(s).asInstanceOf[Json]
     case PEnum(s, symbols) =>
       val js = symbols.map(Json.fromString).toArray
@@ -484,7 +493,7 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
   private def staticRank(v: PVal): Option[Int] = v match
     case PLong(_) | PNumber(_, _, _)            => Some(Runtime.NumberRank)
     case PString(_, _) | PText(_, _) | PEnum(_, _) => Some(Runtime.StringRank)
-    case PJson(_, rank)                         => Some(rank)
+    case PEncoded(_, _, rank, _)                => Some(rank)
     case PSlice(_, _, rank)                     => Some(rank)
     case PSized(_, rank, _)                     => Some(rank)
     case _                                      => None
@@ -561,6 +570,14 @@ final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
           if Ascii.plain(f.bytes, o, n) then Ascii.quoted(f.bytes, o, n) else slow(f)
       case PNumber(_, start, len) => // as written: circe keeps the text of a parsed number
         f => java.util.Arrays.copyOfRange(f.bytes, f.int(start), f.int(start) + f.int(len))
+      case PEncoded(pos, cache, _, e) =>
+        f =>
+          f.refs(cache) match
+            case j: Json => j.noSpaces.getBytes(UTF_8) // already decoded for this record
+            case _ =>
+              f.json.reset(0) // nothing left from a write cut by an error
+              e.write(f, f.int(pos), f.json)
+              f.json.result()
       case _ => viaJson
 
 /** Writing JSON output bytes directly. */

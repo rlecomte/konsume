@@ -62,7 +62,9 @@ from an older schema is `null`.
   uses (`.user.age`), the reading plan: fields in schema order, the needed ones into typed slots
   (a `long`, a `double`, the offset and length of a UTF-8 string, a union index...), the others
   skipped without being decoded, stop after the last needed one. Values used as a whole
-  (records, arrays, maps, bytes) are read into their JSON view. `AvroPlanned` runs this plan with
+  (records, arrays, maps, bytes) are left in the payload: written as JSON straight from their
+  bytes when emitted (`AvroWriter`), decoded into their JSON view only when used otherwise.
+  Arrays iterated (`.items[]`) are walked element by element. `AvroPlanned` runs this plan with
   a small interpreter; one program per writer schema id, built on first sight of the id.
 - `json/`: the JSON cursor, the reference decoder (circe), and the planned reader. `JsonPlanned`:
   keys come in any order, so each object of interest is scanned and its keys compared as bytes
@@ -73,7 +75,10 @@ from an older schema is `null`.
 
 Known limits:
 - Avro: reading stops after the last field the program needs, so a payload corrupted or
-  truncated after that point is accepted (the reference decoder rejects it);
+  truncated after that point is accepted (the reference decoder rejects it); a value skipped is
+  checked for its structure only (an invalid enum index in it is not seen);
+- Avro: an emitted map has its keys in the order of the payload; the reference has them in the
+  order of a `HashMap` (Apache's reader), so the JSON is the same but the bytes may differ;
 - JSON: invalid UTF-8 is not detected, and strings without escapes are compared as bytes, so the
   result on invalid UTF-8 may differ from the reference.
 
@@ -102,11 +107,11 @@ record). An output other than the record unchanged costs ~75 bytes whatever the 
 | `.user.country`                                    | **310** (85)   | 2 525 (2 156)    | **1 263** (85)  | 3 015 (2 095)    |
 | `.user.age`                                        | **279** (85)   | 2 799 (2 124)    | **1 192** (85)  | 3 024 (2 099)    |
 | `select(.user.age > 30) \| .name`                  | **294** (52)   | 3 174 (2 269)    | **1 335** (52)  | 3 866 (2 111)    |
-| `.user`                                            | **1 705** (843) | 3 936 (2 458)   | **3 385** (1 115) | 3 870 (2 245)  |
+| `.user`                                            | **527** (108)  | 3 936 (2 458)    | **3 385** (1 115) | 3 870 (2 245)  |
 | `.items[0]`                                        | **448** (85)   | 2 807 (2 226)    | **1 190** (85)  | 3 035 (2 089)    |
 | `.items[] \| select(. > 50)`                       | **568** (83)   | 3 583 (2 537)    | **1 618** (83)  | 3 462 (2 324)    |
 
-`.user` still builds the JSON view of a whole record.
+`.user` in JSON still builds the JSON view of the object.
 
 `MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
 the planned engine keeps ~1 KiB of heap each and loads no class.

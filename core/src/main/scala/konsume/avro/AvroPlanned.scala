@@ -4,7 +4,7 @@ import io.circe.Json
 import konsume.DecodeError
 import konsume.Record
 import konsume.avro.AvroPlan.{Instr, Planner}
-import konsume.planned.{Demand, Frame, Planned, Sink, Undecoded, Walk, Step as PathStep}
+import konsume.planned.{Demand, Frame, JsonOut, Planned, Sink, Undecoded, Walk, Encoded as PEncoded, Step as PathStep}
 import konsume.jq.Jq
 import org.apache.avro.Schema
 
@@ -36,18 +36,39 @@ object AvroPlanned:
     val slots        = planner.slots.size
     Planned.build(program, penv, walks, regs => AvroFrame(slots, regs))(f => read(f.cur, f))
 
-  /** A frame with its Avro cursor, reused too. */
+  /** A frame with its Avro cursors, reused too: `cur` reads the record, `aux` the values left in
+    * the payload, decoded while the program runs (it may be walking an array with `cur`).
+    */
   final class AvroFrame(slots: Int, registers: Int) extends Frame(slots, registers):
     val cur = AvroCursor(null, 0)
+    val aux = AvroCursor(null, 0)
 
     override def begin(r: Record[Any, Array[Byte]], o: ArrayBuffer[Record[Any, Array[Byte]]]): Unit =
       super.begin(r, o)
       cur.bytes = bytes
       cur.pos = Confluent.HeaderSize
+      aux.bytes = bytes
 
     override def clear(): Unit =
       super.clear()
       cur.bytes = null
+      aux.bytes = null
+
+  /** A value of `schema` left in the payload: decoded from its position when used, or written as
+    * JSON directly from it.
+    */
+  private[avro] final class Encoded(schema: Schema) extends PEncoded:
+    private val writer = AvroWriter(schema)
+
+    def json(f: Frame, pos: Int): Json =
+      val cur = f.asInstanceOf[AvroFrame].aux
+      cur.pos = pos
+      AvroRuntime.readJson(cur, schema)
+
+    def write(f: Frame, pos: Int, out: JsonOut): Unit =
+      val cur = f.asInstanceOf[AvroFrame].aux
+      cur.pos = pos
+      writer(cur, out)
 
   // ---------------------------------------------------------------------- reading plan
 
@@ -79,7 +100,10 @@ object AvroPlanned:
         f.nums(len) = n
         cur.skip(n)
     case ReadPos(s)      => (cur, f) => f.nums(s) = cur.pos
-    case ReadJson(s, k)  => val schema = schemas(k); (cur, f) => f.refs(s) = AvroRuntime.readJson(cur, schema)
+    case ReadEncoded(pos, cache) =>
+      (cur, f) =>
+        f.nums(pos) = cur.pos
+        f.refs(cache) = null
     case ReadCount(s, k) => val schema = schemas(k); (cur, f) => f.nums(s) = AvroRuntime.count(cur, schema)
     case Elements(wanted, k, toEnd) =>
       ElementsStep(wanted.map(_.index).toArray, wanted.map(_.found).toArray, wanted.map(w => steps(w.read, schemas)).toArray, skip(schemas(k)), toEnd)

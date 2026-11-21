@@ -9,7 +9,10 @@ enum PVal:
   case PDouble(slot: Int, isFloat: Boolean)
   case PBoolean(slot: Int)
   case PString(off: Int, len: Int)
-  case PJson(slot: Int, rank: Int)
+  /** a value still in the payload, at the position in slot `pos`: decoded by `value` when used,
+    * its JSON view then kept in `refs(cache)` for the rest of the record (the reader empties it)
+    */
+  case PEncoded(pos: Int, cache: Int, rank: Int, value: Encoded)
   /** any JSON value, in `refs`: an element of a JSON value iterated on its JSON view */
   case PAny(slot: Int)
   case PEnum(slot: Int, symbols: Vector[String])
@@ -28,3 +31,10 @@ enum PVal:
   case PSized(count: Int, rank: Int, whole: Option[PVal])
   /** an error, raised if the value is used (`.a.b` when `.a` is a number) */
   case PFail(message: String)
+
+/** How a reader decodes a value it left in the payload ([[PVal.PEncoded]]). */
+trait Encoded:
+  /** The JSON view of the value at `pos` in the frame's bytes. */
+  def json(f: Frame, pos: Int): Json
+  /** Writes the value at `pos` as JSON, the bytes `json(f, pos).noSpaces` would give. */
+  def write(f: Frame, pos: Int, out: JsonOut): Unit
