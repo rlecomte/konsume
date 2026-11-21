@@ -1,8 +1,8 @@
-package konsume.format
+package konsume.json
 
 import io.circe.Json
 import konsume.Record
-import konsume.format.Planned.{Demand, Frame, PVal, Path}
+import konsume.planned.{Demand, Frame, PVal, Path, Planned}
 import konsume.jq.{Jq, Runtime}
 
 import java.nio.charset.StandardCharsets.UTF_8
@@ -26,7 +26,7 @@ import scala.collection.mutable.ArrayBuffer
 object JsonPlanned:
 
   def compile(program: Jq): Planned.Fn =
-    val demand = Planned.demandOf(program)
+    val demand = Demand.of(program)
     var slots  = 0
     def slot(): Int = { slots += 1; slots - 1 }
     val root = node(demand, slot)

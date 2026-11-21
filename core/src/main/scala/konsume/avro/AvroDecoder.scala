@@ -1,5 +1,6 @@
-package konsume.format
+package konsume.avro
 
+import konsume.{DecodeError, Decoder}
 import io.circe.Json
 import org.apache.avro.Schema
 import org.apache.avro.generic.GenericDatumReader

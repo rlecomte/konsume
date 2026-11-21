@@ -1,5 +1,6 @@
-package konsume.format
+package konsume.json
 
+import konsume.DecodeError
 import io.circe.Json
 
 import java.nio.ByteBuffer

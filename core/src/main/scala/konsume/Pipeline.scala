@@ -1,7 +1,8 @@
 package konsume
 
 import io.circe.Json
-import konsume.format.{AvroDecoder, AvroPlanned, Confluent, DecodeError, Decoder, JsonDecoder, JsonPlanned}
+import konsume.avro.{AvroDecoder, AvroPlanned, Confluent}
+import konsume.json.{JsonDecoder, JsonPlanned}
 import konsume.jq.{Interpreter, Jq, JqError, ParseError, Parser}
 import org.apache.avro.Schema
 
@@ -12,7 +13,7 @@ import scala.collection.mutable.ArrayBuffer
 /** How the jq program is executed. */
 enum Engine:
   /** Only the values the program uses are read from the bytes, the program runs as closures
-    * specialised on their types, see [[format.AvroPlanned]] and [[format.JsonPlanned]].
+    * specialised on their types, see [[avro.AvroPlanned]] and [[json.JsonPlanned]].
     */
   case Planned
   /** Values decoded to JSON first, then a tree-walking interpreter: the reference semantics. */
@@ -46,8 +47,8 @@ object Pipeline:
     * unchanged (a filter) is emitted with its original bytes, untouched; a transformed value is
     * emitted as JSON. Records that cannot be decoded are skipped.
     *
-    * With the planned engine, the bytes are read directly, see [[format.AvroPlanned]] and
-    * [[format.JsonPlanned]]. With the interpreter, values are decoded to JSON first (circe, or
+    * With the planned engine, the bytes are read directly, see [[avro.AvroPlanned]] and
+    * [[json.JsonPlanned]]. With the interpreter, values are decoded to JSON first (circe, or
     * Apache Avro then converted).
     *
     * @param schemas
@@ -102,7 +103,7 @@ object Pipeline:
 
   /** One program per writer schema id, built on first sight of the id. */
   private def avroPlanned[K](program: Jq, schemas: Int => Option[Schema]): Pipeline[K, Array[Byte], K, Array[Byte]] =
-    val bySchemaId = ConcurrentHashMap[Int, format.Planned.Fn]()
+    val bySchemaId = ConcurrentHashMap[Int, planned.Planned.Fn]()
     batch =>
       val out = ArrayBuffer.empty[Record[Any, Array[Byte]]]
       batch.foreach { r =>

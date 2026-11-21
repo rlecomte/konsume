@@ -1,4 +1,4 @@
-package konsume.format
+package konsume.avro
 
 import io.circe.parser.parse
 import konsume.jq.Runtime

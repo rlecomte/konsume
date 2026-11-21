@@ -37,7 +37,7 @@ fails on a record, that record's remaining outputs are dropped. `test` uses `jav
 
 ## JSON view of Avro values
 
-jq programs see Avro values as JSON (`format/AvroJson`): unions unwrapped (`null` or `"x"`, not
+jq programs see Avro values as JSON (`avro/AvroJson`): unions unwrapped (`null` or `"x"`, not
 `{"string":"x"}`), enums as strings, maps and records as objects, `bytes`/`fixed` as base64 strings,
 `decimal` as numbers, other logical types as their underlying value (`timestamp-millis`: a number of
 milliseconds), NaN and infinities as `null`. Values are read with their writer schema: a field missing
@@ -48,24 +48,26 @@ from an older schema is `null`.
 - `jq/Parser`: jq subset → `Jq` AST.
 - `jq/Interpreter`: tree-walking interpreter, the reference semantics (`Engine.Interpreted`).
 - `jq/Runtime`: jq semantics shared by both engines.
-- `format/AvroPlan`: for one Avro writer schema and the paths a program uses (`.user.age`), the
-  reading plan: fields in schema order, the needed ones into typed slots (a `long`, a `double`,
-  the offset and length of a UTF-8 string, a union index...), the others skipped without being
-  decoded, stop after the last needed one. Values used as a whole (records, arrays, maps, bytes)
-  are read into their JSON view.
-- `format/Planned`: what both formats share (`Engine.Planned`, the default). The paths a program
-  uses are found on its syntax tree; the program is turned into closures once, with comparisons
-  specialised on what the reader found (strings compared as UTF-8 bytes in place, `startswith`
-  and `endswith` too, union branches and JSON kinds resolved by their index). One frame of slots
-  per thread, reused: running a program allocates nothing of its own. Building a program takes
-  well under a millisecond.
-- `format/AvroPlanned`: runs the reading plan with a small interpreter. One program per writer
-  schema id, built on first sight of the id.
-- `format/JsonPlanned`: keys come in any order, so each object of interest is scanned and its
-  keys compared as bytes with the expected names; the values of the others are skipped without
-  being decoded. A used value is kept as its kind, plus a double or its position in the payload.
-  The whole payload is read and validated (the tests check it is rejected exactly when circe
-  rejects it); duplicate keys: the last one wins, as in jq.
+- `planned/`: the planned engine (`Engine.Planned`, the default), shared by both formats.
+  `Demand` finds the paths a program uses on its syntax tree; a format reader fills the slots of
+  a `Frame` and describes what it found (`PVal`); `Program` turns the program into closures once,
+  with comparisons specialised on that (strings compared as UTF-8 bytes in place, `startswith`
+  and `endswith` too, union branches and JSON kinds resolved by their index). One frame per
+  thread, reused: running a program allocates nothing of its own. Building a program takes well
+  under a millisecond.
+- `avro/`: Confluent framing, the Avro cursor, the reference decoder (`AvroDecoder`, then
+  `AvroJson`), and the planned reader. `AvroPlan`: for one writer schema and the paths a program
+  uses (`.user.age`), the reading plan: fields in schema order, the needed ones into typed slots
+  (a `long`, a `double`, the offset and length of a UTF-8 string, a union index...), the others
+  skipped without being decoded, stop after the last needed one. Values used as a whole
+  (records, arrays, maps, bytes) are read into their JSON view. `AvroPlanned` runs this plan with
+  a small interpreter; one program per writer schema id, built on first sight of the id.
+- `json/`: the JSON cursor, the reference decoder (circe), and the planned reader. `JsonPlanned`:
+  keys come in any order, so each object of interest is scanned and its keys compared as bytes
+  with the expected names; the values of the others are skipped without being decoded. A used
+  value is kept as its kind, plus a double or its position in the payload. The whole payload is
+  read and validated (the tests check it is rejected exactly when circe rejects it); duplicate
+  keys: the last one wins, as in jq.
 
 Known limits:
 - Avro: reading stops after the last field the program needs, so a payload corrupted or

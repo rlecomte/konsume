@@ -1,4 +1,4 @@
-package konsume.format
+package konsume.json
 
 import io.circe.Json
 import io.circe.parser.parse

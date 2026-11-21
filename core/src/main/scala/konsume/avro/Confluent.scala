@@ -1,5 +1,6 @@
-package konsume.format
+package konsume.avro
 
+import konsume.DecodeError
 import java.nio.ByteBuffer
 
 /** Confluent wire format: magic byte 0, schema id (4 bytes, big endian), then the payload. */

@@ -1,0 +1,24 @@
+package konsume.planned
+
+import io.circe.Json
+
+/** Where the value of a path is, once the payload is read. */
+enum PVal:
+  case PStatic(value: Json)
+  case PLong(slot: Int)
+  case PDouble(slot: Int, isFloat: Boolean)
+  case PBoolean(slot: Int)
+  case PString(off: Int, len: Int)
+  case PJson(slot: Int, rank: Int)
+  case PEnum(slot: Int, symbols: Vector[String])
+  case PChoice(index: Int, branches: Vector[PVal])
+  /** `.name` of a value read entirely: done on its JSON view, when used */
+  case PField(parent: PVal, name: String)
+  /** a JSON number: compared as a double, emitted as written */
+  case PNumber(slot: Int, start: Int, len: Int)
+  /** a JSON string with escapes: decoded when used */
+  case PText(start: Int, len: Int)
+  /** a JSON array or object, still in the payload: parsed when used */
+  case PSlice(start: Int, len: Int, rank: Int)
+  /** an error, raised if the value is used (`.a.b` when `.a` is a number) */
+  case PFail(message: String)

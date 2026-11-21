@@ -1,8 +1,8 @@
-package konsume.format
+package konsume
 
 import io.circe.Json
 import io.circe.parser.parse
-import konsume.{ConsumeConfig, Engine, PayloadFormat, Pipeline, Record}
+import konsume.avro.{AvroFixtures, Confluent}
 import org.apache.avro.Schema
 import org.apache.avro.generic.GenericRecordBuilder
 

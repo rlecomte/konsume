@@ -1,4 +1,4 @@
-package konsume.format
+package konsume.avro
 
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericDatumWriter, GenericRecord}

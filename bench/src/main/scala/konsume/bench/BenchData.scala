@@ -2,7 +2,7 @@ package konsume.bench
 
 import io.circe.Json
 import konsume.Record
-import konsume.format.Confluent
+import konsume.avro.Confluent
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericDatumWriter, GenericRecord, GenericRecordBuilder}
 import org.apache.avro.io.EncoderFactory

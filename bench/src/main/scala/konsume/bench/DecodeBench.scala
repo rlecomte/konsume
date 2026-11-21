@@ -1,7 +1,9 @@
 package konsume.bench
 
 import io.circe.Json
-import konsume.format.{AvroDecoder, Confluent, Decoder, JsonDecoder}
+import konsume.Decoder
+import konsume.avro.{AvroDecoder, Confluent}
+import konsume.json.JsonDecoder
 import konsume.jq.Parser
 import konsume.{ConsumeConfig, PayloadFormat, Pipeline, Record}
 import org.apache.avro.generic.GenericDatumReader

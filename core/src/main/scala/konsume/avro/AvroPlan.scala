@@ -1,7 +1,7 @@
-package konsume.format
+package konsume.avro
 
 import io.circe.Json
-import konsume.format.Planned.{Demand, Path, PVal}
+import konsume.planned.{Demand, Path, PVal}
 import konsume.jq.Runtime
 import org.apache.avro.Schema
 import org.apache.avro.Schema.Type.*
@@ -12,7 +12,7 @@ import scala.jdk.CollectionConverters.*
 /** The reading plan of an Avro record, for the paths a jq program uses: which fields to read,
   * into which slots, which ones to skip, where to stop. Run by [[AvroPlanned]].
   */
-private[format] object AvroPlan:
+private[avro] object AvroPlan:
 
   enum SlotType:
     case Long, Double, Boolean, Int, Json

@@ -1,7 +1,8 @@
-package konsume.format
+package konsume.avro
 
 import io.circe.Json
 import io.circe.parser.parse
+import konsume.DecodeError
 import org.apache.avro.generic.{GenericData, GenericRecordBuilder}
 
 import java.math.BigInteger

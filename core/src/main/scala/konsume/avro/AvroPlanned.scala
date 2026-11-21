@@ -1,8 +1,9 @@
-package konsume.format
+package konsume.avro
 
+import konsume.DecodeError
 import konsume.Record
-import konsume.format.AvroPlan.{Instr, Planner}
-import konsume.format.Planned.Frame
+import konsume.avro.AvroPlan.{Instr, Planner}
+import konsume.planned.{Demand, Frame, Planned}
 import konsume.jq.Jq
 import org.apache.avro.Schema
 
@@ -11,7 +12,7 @@ import scala.collection.mutable.ArrayBuffer
 /** Runs a jq program on Avro bytes, for one writer schema, without decoding the record.
   *
   *  1. the paths whose values the program uses (`.user.age`) are found on its syntax tree
-  *     (`demandOf`);
+  *     ([[konsume.planned.Demand]]);
   *  2. a reading plan is derived from the writer schema ([[AvroPlan]]): needed fields into slots,
   *     the others skipped without being decoded, stop after the last needed one;
   *  3. the plan is run by a small interpreter, and the program is turned into closures once,
@@ -28,7 +29,7 @@ object AvroPlanned:
   def compile(program: Jq, schema: Schema): Planned.Fn =
     val schemas      = ArrayBuffer.empty[Schema]
     val planner      = Planner(schemas)
-    val (plan, penv) = planner.value(schema, Nil, Planned.demandOf(program), needEnd = false)
+    val (plan, penv) = planner.value(schema, Nil, Demand.of(program), needEnd = false)
     val read         = steps(plan, schemas.toVector)
     val slots        = planner.slots.size
     Planned.build(program, penv, regs => AvroFrame(slots, regs))(f => read(f.cur, f))

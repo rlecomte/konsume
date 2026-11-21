@@ -1,4 +1,4 @@
-package konsume.format
+package konsume
 
 import io.circe.Json
 
@@ -10,7 +10,3 @@ final class DecodeError(message: String, cause: Throwable = null)
 trait Decoder:
   /** @throws DecodeError */
   def decode(bytes: Array[Byte]): Json
-
-object JsonDecoder extends Decoder:
-  def decode(bytes: Array[Byte]): Json =
-    io.circe.jawn.parseByteArray(bytes).fold(e => throw DecodeError(e.message, e), identity)

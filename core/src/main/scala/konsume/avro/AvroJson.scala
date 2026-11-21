@@ -1,4 +1,4 @@
-package konsume.format
+package konsume.avro
 
 import io.circe.Json
 import org.apache.avro.{LogicalTypes, Schema}
@@ -48,6 +48,6 @@ object AvroJson:
     case UNION =>
       toJson(datum, schema.getTypes.get(GenericData.get.resolveUnion(schema, datum)))
 
-  private[format] def binary(bytes: Array[Byte], schema: Schema): Json = schema.getLogicalType match
+  private[avro] def binary(bytes: Array[Byte], schema: Schema): Json = schema.getLogicalType match
     case d: LogicalTypes.Decimal => Json.fromBigDecimal(BigDecimal(BigInt(bytes), d.getScale))
     case _                       => Json.fromString(Base64.getEncoder.encodeToString(bytes))

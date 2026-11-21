@@ -2,12 +2,12 @@
 
 konsume first compiled each jq program to JVM bytecode at runtime, with Scala 3 multi-stage
 programming (`scala.quoted.staging`). It was replaced by the planned engine
-(`format/AvroPlanned`), mainly for memory. This page keeps what we learnt, so that the question
+(`planned/`, with `avro/AvroPlanned` and `json/JsonPlanned`), mainly for memory. This page keeps what we learnt, so that the question
 can be reopened with numbers rather than from scratch.
 
 ## Where to find it
 
-Last commit with the staged engine, next to the planned one:
+Last commit with the staged engine, next to the planned one (paths below are as of that commit):
 [`9ab5db4`](https://github.com/rlecomte/konsume/tree/9ab5db4baf72f2e521d8fcef202827ff91e0102b)
 (`git checkout 9ab5db4`).
 
@@ -101,7 +101,7 @@ Memory kept, fresh JVM, after a full GC (`MemoryProbe`), heap / Metaspace:
    did not evaluate its target. The planned engine only takes that shortcut for paths made of
    field accesses alone (`staticPath`).
 9. A dry run of the code generator (`Plan.demand`) and a plain analysis of the syntax tree
-   (`AvroPlanned.demandOf`) find the same paths; the second needs no compiler and is 30 lines.
+   (`planned/Demand`) find the same paths; the second needs no compiler and is 30 lines.
 10. Known limits of the staged decoders, for the record: JSON did not detect invalid UTF-8;
     generated methods could exceed the JIT's 8000-byte limit on very large schemas.
 
