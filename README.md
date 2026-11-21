@@ -77,6 +77,10 @@ Known limits:
 - JSON: invalid UTF-8 is not detected, and strings without escapes are compared as bytes, so the
   result on invalid UTF-8 may differ from the reference.
 
+The fast paths of the planned engine (output written from the slots, two paths compared in
+place, `length` without the value, array indexes in paths, regexes without allocating...) are
+described one by one, with their measurements: [docs/optimizations](docs/optimizations/README.md).
+
 An earlier version compiled the program to bytecode at runtime (Scala 3 staging): about 2x
 faster, but with a compiler in memory and a heap leak. What was measured and learnt:
 [docs/staged-engine.md](docs/staged-engine.md).
