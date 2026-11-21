@@ -25,6 +25,8 @@ private[avro] object AvroPlan:
     case ReadIndex(slot: Int)
     case ReadString(off: Int, len: Int)
     case ReadJson(slot: Int, schema: Int)
+    /** the position of an array walked by the program (`.items[]`) */
+    case ReadPos(slot: Int)
     /** the number of elements of an array or a map, skipped */
     case ReadCount(slot: Int, schema: Int)
     /** some elements of an array (`.items[0]`), by increasing index, the others skipped; stops
@@ -37,11 +39,17 @@ private[avro] object AvroPlan:
   /** Element `index` of an array: read by `read`; slot `found` says whether the array had it. */
   final case class Wanted(index: Int, found: Int, read: List[Instr])
 
+  /** The array at `path`, walked by the program from the position in slot `pos`, each element
+    * read by `read`.
+    */
+  final case class WalkPlan(path: Path, pos: Int, read: List[Instr])
+
   /** Where the value of a path will be, once read. */
   import Instr.*, PVal.*
 
   final class Planner(schemas: ArrayBuffer[Schema]):
     val slots = ArrayBuffer.empty[SlotType]
+    val walks = ArrayBuffer.empty[WalkPlan]
 
     private def slot(t: SlotType): Int =
       slots += t
@@ -55,7 +63,17 @@ private[avro] object AvroPlan:
         schemas.size - 1
 
     /** Reads a value of `schema` at `prefix`; `needEnd`: the cursor must end after it. */
-    def value(schema: Schema, prefix: Path, d: Demand, needEnd: Boolean): (List[Instr], Map[Path, PVal]) =
+    def value(schema: Schema, prefix: Path, demand: Demand, needEnd: Boolean): (List[Instr], Map[Path, PVal]) =
+      val walked = demand.children.contains(Step.Each)
+      val nothingElse = !demand.asValue && !demand.length
+      schema.getType match
+        case ARRAY if walked && nothingElse && demand.children.size == 1 =>
+          walk(schema, prefix, demand.children(Step.Each), needEnd)
+        case RECORD if !walked && nothingElse => record(schema, prefix, demand.children, needEnd)
+        case _ => whole(schema, prefix, demand.withoutWalk, needEnd)
+
+    /** Anything else: no array walked below (unions, maps, arrays used otherwise). */
+    private def whole(schema: Schema, prefix: Path, d: Demand, needEnd: Boolean): (List[Instr], Map[Path, PVal]) =
       schema.getType match
         case NULL => (Nil, d.valuePaths(prefix).map(_ -> PStatic(Json.Null)).toMap)
         case UNION =>
@@ -63,7 +81,6 @@ private[avro] object AvroPlan:
           val branches = schema.getTypes.asScala.toVector.map(value(_, prefix, d, needEnd))
           val env      = d.valuePaths(prefix).map(p => p -> PChoice(index, branches.map(_._2(p)))).toMap
           (List(ReadIndex(index), Branch(index, branches.map(_._1))), env)
-        case RECORD if !d.asValue && !d.length => record(schema, prefix, d.children, needEnd)
         case ARRAY if !d.asValue && !d.length && d.children.nonEmpty && d.children.keys.forall(_.isInstanceOf[Step.At]) =>
           elements(schema, prefix, d.children, needEnd)
         case ARRAY | MAP if d.lengthOnly => // `length`: counted, not read
@@ -91,12 +108,24 @@ private[avro] object AvroPlan:
         step match
           // a field the writer schema does not have is null, and so is everything under it
           case Step.Key(name) if schema.getField(name) == null =>
-            env ++= d.valuePaths(prefix :+ step).map(_ -> PStatic(Json.Null))
+            env ++= d.withoutWalk.valuePaths(prefix :+ step).map(_ -> PStatic(Json.Null))
           // `.user[0]`: a record is an object, it has no elements
           case Step.At(_) =>
-            env ++= d.valuePaths(prefix :+ step).map(_ -> PFail("Cannot index object with number"))
+            env ++= d.withoutWalk.valuePaths(prefix :+ step).map(_ -> PFail("Cannot index object with number"))
           case _ => ()
       (instrs.result(), env)
+
+    /** `.items[]`: only the position of the array is kept while reading the record. The program
+      * walks it later, each element read into the same slots ([[WalkPlan]]); the values of the
+      * paths below are those of the element at hand. The array is skipped only when something
+      * after it is needed.
+      */
+    private def walk(schema: Schema, prefix: Path, each: Demand, needEnd: Boolean) =
+      val pos = slot(SlotType.Int)
+      // the walk goes on after the element: it must be read to its end
+      val (read, env) = value(schema.getElementType, prefix :+ Step.Each, each, needEnd = true)
+      walks += WalkPlan(prefix, pos, read)
+      (ReadPos(pos) :: (if needEnd then List(Skip(schema)) else Nil), env)
 
     /** `.items[0]`, `.items[2].x`: only these elements are read, each into its own slots. */
     private def elements(schema: Schema, prefix: Path, children: Map[Step, Demand], needEnd: Boolean) =

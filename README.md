@@ -104,9 +104,9 @@ record). An output other than the record unchanged costs ~75 bytes whatever the 
 | `select(.user.age > 30) \| .name`                  | **294** (52)   | 3 174 (2 269)    | **1 335** (52)  | 3 866 (2 111)    |
 | `.user`                                            | **1 705** (843) | 3 936 (2 458)   | **3 385** (1 115) | 3 870 (2 245)  |
 | `.items[0]`                                        | **448** (85)   | 2 807 (2 226)    | **1 190** (85)  | 3 035 (2 089)    |
-| `.items[] \| select(. > 50)`                       | **968** (509)  | 3 583 (2 537)    | **2 299** (911) | 3 462 (2 324)    |
+| `.items[] \| select(. > 50)`                       | **568** (83)   | 3 583 (2 537)    | **1 618** (83)  | 3 462 (2 324)    |
 
-`.user` and `.items[]` still build the JSON view of a whole record or array.
+`.user` still builds the JSON view of a whole record.
 
 `MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
 the planned engine keeps ~1 KiB of heap each and loads no class.

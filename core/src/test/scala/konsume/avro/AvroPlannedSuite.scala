@@ -47,6 +47,20 @@ class AvroPlannedSuite extends munit.FunSuite:
         if !aOriginal then assertEquals(String(a.value, UTF_8), String(e.value, UTF_8), clue)
       }
 
+  /** Avro written by hand: Apache's writer always writes an array in one block, without its size. */
+  private object Hand:
+    def long(v: Long): Array[Byte] =
+      val out = java.io.ByteArrayOutputStream()
+      var z   = (v << 1) ^ (v >> 63) // zigzag
+      while (z & ~0x7fL) != 0 do
+        out.write(((z & 0x7f) | 0x80).toInt)
+        z >>>= 7
+      out.write(z.toInt)
+      out.toByteArray
+    def str(x: String)  = { val b = x.getBytes(UTF_8); long(b.length) ++ b }
+    def block(xs: Int*) = long(xs.size) ++ xs.flatMap(long(_))
+    def sized(xs: Int*) = { val body = xs.flatMap(long(_)).toArray; long(-xs.size) ++ long(body.length) ++ body }
+
   private def randomCase(seed: Int) =
     val gen    = Gen(Random(seed))
     val schema = gen.schema()
@@ -124,18 +138,7 @@ class AvroPlannedSuite extends munit.FunSuite:
         {"name": "rs", "type": {"type": "array", "items":
           {"type": "record", "name": "E", "fields": [{"name": "a", "type": "int"}, {"name": "b", "type": "string"}]}}},
         {"name": "s", "type": "string"}]}""")
-    // Avro written by hand: Apache's writer always writes one block, without its size
-    def long(v: Long): Array[Byte] =
-      val out = java.io.ByteArrayOutputStream()
-      var z   = (v << 1) ^ (v >> 63) // zigzag
-      while (z & ~0x7fL) != 0 do
-        out.write(((z & 0x7f) | 0x80).toInt)
-        z >>>= 7
-      out.write(z.toInt)
-      out.toByteArray
-    def str(x: String)       = { val b = x.getBytes(UTF_8); long(b.length) ++ b }
-    def block(xs: Int*)      = long(xs.size) ++ xs.flatMap(long(_))
-    def sized(xs: Int*)      = { val body = xs.flatMap(long(_)).toArray; long(-xs.size) ++ long(body.length) ++ body }
+    import Hand.*
     def elem(a: Int, b: String) = long(a) ++ str(b)
     val rs                   = long(2) ++ elem(1, "x") ++ elem(2, "y") ++ long(0)
     val arrays = List(
@@ -153,6 +156,53 @@ class AvroPlannedSuite extends munit.FunSuite:
       "select(.rs[1].a == 2) | .xs[0]", ".rs[5].b", ".xs[0].a"
     )
     programs.foreach(check(schema, batch, _))
+  }
+
+  test("arrays walked by the program: blocks, nested walks, a field after, corrupted elements") {
+    import Hand.*
+    val schema = AvroFixtures.schema("""
+      {"type": "record", "name": "R", "fields": [
+        {"name": "xs", "type": {"type": "array", "items": "int"}},
+        {"name": "rs", "type": {"type": "array", "items":
+          {"type": "record", "name": "E", "fields": [
+            {"name": "a", "type": "int"},
+            {"name": "ys", "type": {"type": "array", "items": "int"}},
+            {"name": "b", "type": "string"}]}}},
+        {"name": "xss", "type": {"type": "array", "items": {"type": "array", "items": "int"}}},
+        {"name": "s", "type": "string"}]}""")
+    def e(a: Int, ys: Array[Byte], b: String) = long(a) ++ ys ++ str(b)
+    // each element of rs has an array, walked inside the walk of rs, and a field after it
+    val rs = List(
+      long(0),
+      long(1) ++ e(1, block(5, 6) ++ long(0), "x") ++ long(0),
+      long(2) ++ e(1, sized(7) ++ block(8) ++ long(0), "x") ++ e(3, long(0), "y") ++ long(0),
+      { // a sized block of records, then a plain one
+        val body = e(2, block(1) ++ long(0), "p") ++ e(4, sized(9, 2) ++ long(0), "q")
+        long(-2) ++ long(body.length) ++ body ++ long(1) ++ e(5, long(0), "r") ++ long(0)
+      }
+    )
+    val xs  = List(long(0), block(1, 2, 3) ++ long(0), block(1) ++ sized(2, 3) ++ long(0), sized(4) ++ sized(5) ++ long(0))
+    val xss = List(long(0), long(1) ++ block(1, 2) ++ long(0) ++ long(0), long(2) ++ long(0) ++ sized(3) ++ long(0) ++ long(0))
+    val good =
+      for (x, i) <- xs.zipWithIndex; (r, j) <- rs.zipWithIndex
+      yield x ++ r ++ xss((i + j) % xss.size) ++ str(if (i + j) % 2 == 0 then "FR" else "DE")
+    val corrupted = List(
+      long(3) ++ long(1) ++ long(2),                                        // truncated in xs
+      block(1, 2) ++ long(0) ++ long(1) ++ long(1) ++ long(2) ++ long(5),   // truncated in the ys of an element of rs
+      block(1, 2) ++ long(0) ++ long(1) ++ long(1) ++ long(0) ++ long(40) ++ "ab".getBytes(UTF_8) // b beyond the payload
+    )
+    def batch(payloads: List[Array[Byte]]) =
+      payloads.zipWithIndex.map((v, i) => Record("t", 0, i.toLong, 0L, "k", Confluent.frame(1, v))).toVector
+    val programs = List(
+      ".xs[]", ".xs[] | select(. > 1)", """select(.s == "FR") | .xs[]""", ".xs[] | select(. > 1) | . == 3",
+      ".rs[] | .b", ".rs[] | select(.a > 1) | .b", ".rs[] | .ys[]", ".rs[] | .ys[] | select(. > 5)",
+      ".rs[] | select(.ys[] > 6) | .b", ".rs[] | .ys[0]", ".rs[] | .a == .ys[0]", ".rs[] | .ys | length",
+      ".xss[][]", ".xss[] | .[] | select(. != 2)", ".xss[] | length", ".rs[] | .xs",
+      ".xs[] > 1", ".xs[] > .xs[]", "select(.xs[] > 2) | .s", "select(.xs[] > 2) | .xs[]", ".xs[] | .a"
+    )
+    // an undecodable record emits nothing, even when some elements were emitted before the
+    // corruption is found; corruption after the last field read is not seen (see the README)
+    programs.foreach(p => check(schema, batch(good ++ (if p.contains(".rs") then corrupted else corrupted.take(1))), p))
   }
 
   test("truncated and corrupted payloads are skipped") {

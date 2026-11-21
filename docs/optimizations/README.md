@@ -15,6 +15,7 @@ added to avoid that fallback on common shapes of programs.
 | [`test()` without allocating](regex-on-bytes.md) | `select(.name \| test("^jo"))` | `10975a2` |
 | [`startswith` / `endswith` on JSON strings](affix-on-json-strings.md) | `select(.name \| startswith("jo"))` | `2697b5e` |
 | [Two allocations per record, found by profiling](profiling-fixes.md) | every Avro program | `7efbd03` |
+| [Arrays walked element by element](walking-arrays.md) | `.items[] \| select(. > 50)`, `.rs[] \| .b` | |
 
 ## How it is measured
 
@@ -49,10 +50,10 @@ Planned engine, bytes allocated per record:
 | `select(.name \| test("^jo"))` | 7 | 7 |
 | `select(.name \| startswith("jo"))` | 7 | 7 |
 | `.user.country`, `.user.age`, `.items[0]` | 85 (floor) | 85 (floor) |
+| `.items[] \| select(. > 50)` | 83 (floor) | 83 (floor) |
 | `.user` | 843 | 1 115 |
-| `.items[] \| select(. > 50)` | 509 | 911 |
 
-The last two still build the JSON view of a whole record or array.
+`.user` still builds the JSON view of a whole record.
 
 ## Principles that held for all of them
 

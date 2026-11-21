@@ -10,6 +10,8 @@ enum PVal:
   case PBoolean(slot: Int)
   case PString(off: Int, len: Int)
   case PJson(slot: Int, rank: Int)
+  /** any JSON value, in `refs`: an element of a JSON value iterated on its JSON view */
+  case PAny(slot: Int)
   case PEnum(slot: Int, symbols: Vector[String])
   case PChoice(index: Int, branches: Vector[PVal])
   /** `.name` or `[i]` of a value read entirely: done on its JSON view, when used */

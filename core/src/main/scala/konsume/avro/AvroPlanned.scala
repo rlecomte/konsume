@@ -1,9 +1,10 @@
 package konsume.avro
 
+import io.circe.Json
 import konsume.DecodeError
 import konsume.Record
 import konsume.avro.AvroPlan.{Instr, Planner}
-import konsume.planned.{Demand, Frame, Planned}
+import konsume.planned.{Demand, Frame, Planned, Sink, Undecoded, Walk, Step as PathStep}
 import konsume.jq.Jq
 import org.apache.avro.Schema
 
@@ -31,8 +32,9 @@ object AvroPlanned:
     val planner      = Planner(schemas)
     val (plan, penv) = planner.value(schema, Nil, Demand.of(program), needEnd = false)
     val read         = steps(plan, schemas.toVector)
+    val walks        = planner.walks.map(w => w.path -> ArrayWalk(w.pos, steps(w.read, schemas.toVector), Undecoded(w.path :+ PathStep.Each))).toMap
     val slots        = planner.slots.size
-    Planned.build(program, penv, regs => AvroFrame(slots, regs))(f => read(f.cur, f))
+    Planned.build(program, penv, walks, regs => AvroFrame(slots, regs))(f => read(f.cur, f))
 
   /** A frame with its Avro cursor, reused too. */
   final class AvroFrame(slots: Int, registers: Int) extends Frame(slots, registers):
@@ -76,6 +78,7 @@ object AvroPlanned:
         f.nums(off) = cur.pos
         f.nums(len) = n
         cur.skip(n)
+    case ReadPos(s)      => (cur, f) => f.nums(s) = cur.pos
     case ReadJson(s, k)  => val schema = schemas(k); (cur, f) => f.refs(s) = AvroRuntime.readJson(cur, schema)
     case ReadCount(s, k) => val schema = schemas(k); (cur, f) => f.nums(s) = AvroRuntime.count(cur, schema)
     case Elements(wanted, k, toEnd) =>
@@ -119,6 +122,33 @@ object AvroPlanned:
             b += 1
         i += n
         n = cur.readLong()
+
+  /** Walks an array from its position (slot `pos`), block by block: each element is read by
+    * `read`, then passed to the program (`element`, the path being walked). The program may walk
+    * an array inside the element (`.rs[] | .xs[]`), which moves the cursor: it is put back after
+    * the element before going on.
+    */
+  private final class ArrayWalk(pos: Int, read: Step, element: Undecoded) extends Walk:
+    def apply(f: Frame, body: Sink): Boolean =
+      val cur = f.asInstanceOf[AvroFrame].cur
+      cur.pos = f.int(pos)
+      var n = cur.readLong()
+      while n != 0 do
+        if n < 0 then
+          n = -n
+          cur.readLong() // the size of the block in bytes: every element is read anyway
+        var b = 0L
+        while b < n do
+          read(cur, f)
+          val next = cur.pos
+          body(f, element)
+          cur.pos = next
+          b += 1
+        n = cur.readLong()
+      true
+
+    // the schema says it is an array: always walked
+    def hold(f: Frame, element: Json): Unit = throw IllegalStateException("internal error: an Avro array is always walked")
 
   /** Fixed-size and string skips inline; anything bigger by the generic schema walker. */
   private def skip(schema: Schema): Step =

@@ -104,6 +104,28 @@ class JsonPlannedSuite extends munit.FunSuite:
     programs.foreach(check(_, records(docs)))
   }
 
+  test("arrays walked: not an array, nested walks, what is left from the previous element") {
+    val docs = List(
+      """{"xs":[1,2,3],"s":"a"}""", """{"xs":[]}""", """{"xs":null}""", """{}""", """{"xs":5}""", """{"xs":"abc"}""",
+      """{"xs":[ 1 , "a\u0041" , true , null , -0.50 ]}""", """[1,[2],{"a":3}]""",
+      // an object is iterated on its values: on its JSON view, duplicate keys as circe keeps them
+      """{"xs":{"a":1,"b":[2,3]}}""", """{"xs":{"a":1,"a":2,"b":0}}""", """{"xs":{"k":{"ys":[4,5]},"j":{"ys":7}}}""",
+      // the last key wins: an array then an object, an object then an array
+      """{"xs":[1],"xs":{"a":{"ys":[8]}}}""", """{"xs":{"a":1},"xs":[{"ys":[9]}]}""",
+      // nested walks; an element without the array the previous one had
+      """{"xs":[{"ys":[1]},5,{"ys":[2,3]}]}""", """{"xs":[{"ys":[1]},{"zs":0},{"ys":[]}]}""",
+      """{"xs":[{"ys":[1,2]},{"ys":{"a":6}},{"ys":null}]}""", """{"xs":[[1,2],[],[3,[4]]]}""",
+      """{"xs":[{"ys":[{"zs":[1]}]},{"ys":{"k":{"zs":[2]}}}]}""", """{"xs":[{"ys":[1]}],"ys":[0]}"""
+    )
+    val programs = List(
+      ".xs[]", ".xs[] | select(. > 1)", ".xs[] | select(. == true)", ".xs[] | .ys[]", ".xs[] | .ys[] | select(. >= 2)",
+      ".xs[][]", ".xs[] | .ys", ".xs[] | .ys[0]", ".xs[] | .ys | length", ".xs[] | length", ".xs[] | .ys[] | .zs[]",
+      ".xs[] | select(.ys != null) | .ys[]", """.xs[] | test("A")""", ".xs[] > .xs[]", "select(.xs[] > 1) | .xs[]",
+      ".[]", ".[] | select(. != 1)", ".xs[] | .ys[] | 1", ".xs[] | .ys[] | .zs[] | true", ".xs[] | .a", "select(.s == \"a\") | .xs[]"
+    )
+    programs.foreach(check(_, records(docs)))
+  }
+
   private val programs = Corpus.programs ++ List(
     "select(.user.age > 30)", """select(.user.country == "FR")""", ".user.age", ".user", """select(.country == "FR")""",
     ".score", "select(.score < 1)", ".items[]", ".tags[]", "select(.age == 100)", "select(.age < 31)", ".age == 40",

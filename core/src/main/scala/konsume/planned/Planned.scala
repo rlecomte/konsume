@@ -1,6 +1,6 @@
 package konsume.planned
 
-import konsume.Record
+import konsume.{DecodeError, Record}
 import konsume.jq.{Jq, JqError}
 
 import scala.collection.mutable.ArrayBuffer
@@ -20,16 +20,23 @@ object Planned:
     * then the program runs on them. One frame per thread, reused from record to record: running
     * allocates nothing of its own.
     */
-  def build[F <: Frame](program: Jq, penv: Map[Path, PVal], newFrame: Int => F)(read: F => Unit): Fn =
-    val p      = Program(penv)
+  def build[F <: Frame](program: Jq, penv: Map[Path, PVal], walks: Map[Path, Walk], newFrame: Int => F)(read: F => Unit): Fn =
+    val p      = Program(penv, walks)
     val run    = p.node(program, Some(Nil), p.emit)
     val regs   = p.registers
     val frames = ThreadLocal.withInitial(() => newFrame(regs))
     (record, out) =>
-      val f = frames.get()
+      val f    = frames.get()
+      val mark = out.size
       f.begin(record, out)
       try
         read(f)
         run(f, Root)
-      catch case _: JqError => () // the record is skipped, outputs already emitted are kept
-      finally f.clear()            // the frame outlives the batch: keep no record nor output alive
+      catch
+        case _: JqError => () // the record is skipped, outputs already emitted are kept
+        case e @ (_: DecodeError | _: IndexOutOfBoundsException) =>
+          // an array walked by the program can turn out undecodable after some of its elements
+          // were emitted: an undecodable record emits nothing
+          out.dropRightInPlace(out.size - mark)
+          throw e
+      finally f.clear() // the frame outlives the batch: keep no record nor output alive

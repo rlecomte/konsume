@@ -20,6 +20,18 @@ val Root: Undecoded = Undecoded(Nil)
 trait Sink:
   def apply(f: Frame, v: AnyRef): Unit
 
+/** Walks an array of the payload element by element (`.items[]`), for the program: reads each
+  * element into its slots, then passes it to `body`. Given by the reader, for the arrays it can
+  * walk.
+  */
+trait Walk:
+  /** False when the value is not an array of the payload (JSON: an object, null...): nothing
+    * was walked, the program iterates its JSON view, each element given to [[hold]].
+    */
+  def apply(f: Frame, body: Sink): Boolean
+  /** Makes `element` the element at hand: the paths below read it instead of the slots. */
+  def hold(f: Frame, element: Json): Unit
+
 /** A condition on the slots and the current input. */
 trait Cond:
   def apply(f: Frame, v: AnyRef): Boolean
@@ -36,7 +48,10 @@ private enum Operand:
 import PVal.*
 
 /** The program turned into closures once, on the values `penv` gives for the paths it uses. */
-final class Program(penv: Map[Path, PVal]):
+final class Program(penv: Map[Path, PVal], walks: Map[Path, Walk]):
+
+  /** The arrays walked element by element: the paths below `.a[]` are read into slots. */
+  private val walked: Path => Boolean = walks.contains
 
   private var nregs = 0
   def registers: Int = nregs
@@ -66,7 +81,7 @@ final class Program(penv: Map[Path, PVal]):
       case None    => generic(p, in, k)
 
   private def generic(p: Jq, in: Option[Path], k: Sink): Sink = p match
-    case Jq.Identity   => k
+    case Jq.Identity   => emitting(in, k)
     case Jq.Literal(j) => (f, _) => k(f, j)
     case Jq.Empty      => (_, _) => ()
     case Jq.Not        => (f, v) => k(f, Runtime.bool(!Runtime.truthy(json(v, f))))
@@ -84,11 +99,25 @@ final class Program(penv: Map[Path, PVal]):
         case Some(path) => atPath(path, k)
         case None       => node(t, in, (f, x) => k(f, Runtime.index(json(x, f), i)))
     case Jq.Iterate(t) =>
-      node(t, in, (f, x) =>
-        val it = Runtime.iterate(json(x, f))
-        while it.hasNext do k(f, it.next()))
+      pathOf(t, in, walked).flatMap(a => walks.get(a).map(a -> _)) match
+        case Some((array, walk)) =>
+          // `k` reads the element at hand from its slots
+          val (whole, element) = (Undecoded(array), Undecoded(array :+ Step.Each))
+          val walking: Sink = (f, _) =>
+            if !walk(f, k) then
+              val it = Runtime.iterate(json(whole, f))
+              while it.hasNext do
+                walk.hold(f, it.next())
+                k(f, element)
+          // `.items`: nothing to run (running it would build the JSON view of the array, unused);
+          // `select(c) | .items`: `select` must run
+          if staticPath(t, in).isDefined then walking else node(t, in, walking)
+        case None =>
+          node(t, in, (f, x) =>
+            val it = Runtime.iterate(json(x, f))
+            while it.hasNext do k(f, it.next()))
 
-    case Jq.Pipe(l, r) => node(l, in, node(r, pathOf(l, in), k))
+    case Jq.Pipe(l, r) => node(l, in, node(r, pathOf(l, in, walked), k))
 
     case Jq.Compare(op, l, r) =>
       // jq iterates over the right operand in the outer loop
@@ -101,11 +130,12 @@ final class Program(penv: Map[Path, PVal]):
     case Jq.Or(l, r)  => logical(l, r, in, shortCircuitOn = true, k)
 
     case Jq.Select(c) =>
+      val out = emitting(in, k) // `select` outputs its input: the value at `in`
       cond(c, in).filter(_ => singleOutput(c)) match
-        case Some(cf) => (f, v) => if cf(f, v) then k(f, v)
+        case Some(cf) => (f, v) => if cf(f, v) then out(f, v)
         case None =>
           val input = register()
-          val cn    = node(c, in, (f, x) => if Runtime.truthy(json(x, f)) then k(f, f.regs(input)))
+          val cn    = node(c, in, (f, x) => if Runtime.truthy(json(x, f)) then out(f, f.regs(input)))
           (f, v) => { f.regs(input) = v; cn(f, v) }
 
     case Jq.Test(Jq.Literal(j)) if j.isString =>
@@ -120,14 +150,21 @@ final class Program(penv: Map[Path, PVal]):
 
   /** The value at a path of the record, passed to `k`. */
   private def atPath(path: Path, k: Sink): Sink =
-    if (k eq emit) && penv.contains(path) then
-      // the output of the program: written from the slots, without building a `Json`
-      val w = output(penv(path))
-      (f, _) => f.out += f.record.copy(value = w(f))
+    if (k eq emit) && penv.contains(path) then emitting(Some(path), k)
     else
       materializers.get(path) match
         case Some(m) => (f, _) => k(f, m(f))
         case None    => val u = Undecoded(path); (f, _) => k(f, u) // only navigated through
+
+  /** `k`, given the value at `in`: when it is the output of the program and `in` is a path read
+    * into slots, written from the slots, without building a `Json`. The record itself is emitted
+    * with its own bytes, by `emit`.
+    */
+  private def emitting(in: Option[Path], k: Sink): Sink = in match
+    case Some(path) if (k eq emit) && path.nonEmpty && penv.contains(path) =>
+      val w = output(penv(path))
+      (f, _) => f.out += f.record.copy(value = w(f))
+    case _ => k
 
   /** `body(input, x)` for each output `x` of `arg` on the input. */
   private def withInput(arg: Jq, in: Option[Path])(body: (Frame, AnyRef, AnyRef) => Unit): Sink =
@@ -312,6 +349,7 @@ final class Program(penv: Map[Path, PVal]):
       case PJson(s, rank) =>
         if rank != Runtime.rank(y) then byRank(rank)
         else (f, _) => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
+      case PAny(s) => (f, _) => op.test(Runtime.compare(f.refs(s).asInstanceOf[Json], y))
       case PField(_, _) =>
         val m = materialize(v)
         (f, _) => op.test(Runtime.compare(m(f), y))
@@ -344,6 +382,7 @@ final class Program(penv: Map[Path, PVal]):
     case PDouble(s, _)                          => (f, _) => java.lang.Double.isFinite(f.double(s))
     case PBoolean(s)                            => (f, _) => f.nums(s) != 0
     case PJson(_, rank)                         => const(rank > Runtime.FalseRank)
+    case PAny(s)                                => (f, _) => Runtime.truthy(f.refs(s).asInstanceOf[Json])
     case PChoice(s, branches) =>
       val bs = branches.map(truthy).toArray
       (f, v) => bs(f.int(s))(f, v)
@@ -364,6 +403,7 @@ final class Program(penv: Map[Path, PVal]):
     case PBoolean(s)       => f => Runtime.bool(f.nums(s) != 0)
     case PString(off, len) => f => Json.fromString(String(f.bytes, f.int(off), f.int(len), UTF_8))
     case PJson(s, _)       => f => f.refs(s).asInstanceOf[Json]
+    case PAny(s)           => f => f.refs(s).asInstanceOf[Json]
     case PEnum(s, symbols) =>
       val js = symbols.map(Json.fromString).toArray
       f => js(f.int(s))
@@ -376,6 +416,7 @@ final class Program(penv: Map[Path, PVal]):
     case PField(parent, Step.At(i)) =>
       val m = materialize(parent)
       f => Runtime.index(m(f), i)
+    case PField(_, Step.Each) => throw IllegalStateException("internal error: an element being walked is not a field")
     case PNumber(_, start, len) => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
     case PText(start, len)      => f => Json.fromString(JsonCursor.unescape(f.bytes, f.int(start), f.int(len)))
     case PSlice(start, len, _)  => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
