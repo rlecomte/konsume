@@ -24,11 +24,15 @@ added to avoid that fallback on common shapes of programs.
 JSON (~65 bytes), with JMH and `-prof gc`:
 
 ```
-sbt 'bench/Jmh/run -prof gc -p engine=Planned konsume.bench.ShapesBench'
+bench/run.sh
 ```
 
-Two numbers per program: µs per batch of 10k records, and bytes allocated per record. One fork:
-take the times as ±10 to 20 %; the allocations are stable to the byte.
+(see [benchmarks](../benchmarks.md): every run is saved in `bench/results` and compared with the
+previous one).
+
+Two numbers per program: µs per batch of 10k records, and bytes allocated per record. The pages
+up to "values written from their bytes" were measured by hand with one fork: take their times as
+±10 to 20 %; the allocations are stable to the byte.
 
 ## The floor
 

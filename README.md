@@ -95,7 +95,11 @@ faster, but with a compiler in memory and a heap leak. What was measured and lea
 
 ## Benchmark
 
-`sbt 'bench/Jmh/run -prof gc konsume.bench.ShapesBench'`: one program per shape, the same 10k
+`bench/run.sh` measures, `bench/compare.sh` compares with the previous run, `bench/profile.sh`
+profiles one case; every result is committed in `bench/results`: see
+[docs/benchmarks.md](docs/benchmarks.md).
+
+`ShapesBench`: one program per shape, the same 10k
 events in Avro (~19 bytes) and JSON (~65 bytes), JDK 25, µs per batch (bytes allocated per
 record). An output other than the record unchanged costs ~75 bytes whatever the engine (a new
 `Record` and its value).
