@@ -45,9 +45,8 @@ class AvroPlannedSuite extends munit.FunSuite:
         val aOriginal = batch.exists(_.value eq a.value)
         val eOriginal = batch.exists(_.value eq e.value)
         assertEquals(aOriginal, eOriginal, clue)
-        if !aOriginal then
-          val (aj, ej) = (parse(String(a.value, UTF_8)).toOption.get, parse(String(e.value, UTF_8)).toOption.get)
-          assert(Runtime.compare(aj, ej) == 0, clue)
+        // re-encoded outputs: the very same bytes as the reference writes
+        if !aOriginal then assertEquals(String(a.value, UTF_8), String(e.value, UTF_8), clue)
       }
 
   private def randomCase(seed: Int) =

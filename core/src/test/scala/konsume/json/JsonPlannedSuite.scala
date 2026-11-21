@@ -32,6 +32,9 @@ class JsonPlannedSuite extends munit.FunSuite:
     // object as the input, which also happens by chance, `null` being a singleton.)
     def meaning(rs: Vector[Record[String, Array[Byte]]]) =
       rs.map(r => (r.offset, parse(String(r.value, UTF_8)).fold(e => fail(s"invalid output: $e"), identity)))
+    // when both re-encode the output, the very same bytes
+    for (x, y) <- actual.zip(expected) if !batch.exists(_.value eq x.value) && !batch.exists(_.value eq y.value) do
+      assertEquals(String(x.value, UTF_8), String(y.value, UTF_8), s"program: $program, record #${x.offset}")
     val (a, e) = (meaning(actual), meaning(expected))
     val same = a.size == e.size && a.zip(e).forall { case ((ao, aj), (eo, ej)) => ao == eo && Runtime.compare(aj, ej) == 0 }
     if !same then
@@ -76,6 +79,17 @@ class JsonPlannedSuite extends munit.FunSuite:
     "\"unterminated", """{"a":"\"}""", """{"a":1""", """{"a" """, "[", "]", "{\"age\":40}\u0000",
     """{"age":NaN}""", """{"age":Infinity}""", """{"a":'x'}""", """{"a":TRUE}"""
   )
+
+  test("outputs written from the payload are byte for byte those of the reference") {
+    val values = List(
+      "0", "-0", "7", "-7", "1.0", "-0.0", "1e2", "1E+2", "-1.5e-3", "123456789012345678", "9223372036854775807",
+      "-9223372036854775808", "12345678901234567890", "0.1000", "\"plain\"", "\"\"", "\"é\"", "\"😀\"",
+      "\"a\\\"b\"", "\"tab\\t\"", "\"\\u0041\"", "\"~\"", "\"\u007f\"", "\"a/b\"", "\"a\\/b\"", "true", "false",
+      "null", "[1, 2]", "{\"x\": 1}"
+    )
+    val batch = records(values.map(v => s"""{"a": $v, "b": {"c": $v}, "n": $v}"""))
+    List(".a", ".b.c", "select(.n != 1) | .a", ".a | length").foreach(check(_, batch))
+  }
 
   private val programs = Corpus.programs ++ List(
     "select(.user.age > 30)", """select(.user.country == "FR")""", ".user.age", ".user", """select(.country == "FR")""",

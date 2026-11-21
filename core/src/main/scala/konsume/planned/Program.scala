@@ -30,6 +30,8 @@ private enum Operand:
   case At(value: PVal)
   /** the current input, a computed value (`.items[] | select(. > 50)`) */
   case Input
+  /** the length of a path of the record (`.items | length`) */
+  case Len(value: PVal)
 
 import PVal.*
 
@@ -42,7 +44,8 @@ final class Program(penv: Map[Path, PVal]):
     nregs += 1
     nregs - 1
 
-  private val materializers = penv.map((p, v) => p -> materialize(v))
+  // a path whose length only was read has no value: navigating through it stays `Undecoded`
+  private val materializers = penv.collect { case (p, v) if materializable(v) => p -> materialize(v) }
 
   /** `v` as a `Json`. */
   def json(v: AnyRef, f: Frame): Json = v match
@@ -67,10 +70,17 @@ final class Program(penv: Map[Path, PVal]):
     case Jq.Literal(j) => (f, _) => k(f, j)
     case Jq.Empty      => (_, _) => ()
     case Jq.Not        => (f, v) => k(f, Runtime.bool(!Runtime.truthy(json(v, f))))
-    case Jq.Length     => (f, v) => k(f, Runtime.length(json(v, f)))
+    case Jq.Length =>
+      in.flatMap(penv.get) match
+        case Some(pv) => val l = lengthJson(pv); (f, _) => k(f, l(f)) // the length of a path of the record
+        case None     => (f, v) => k(f, Runtime.length(json(v, f)))
 
     case Jq.Field(t, name) =>
       staticPath(p, in) match
+        case Some(path) if (k eq emit) && penv.contains(path) =>
+          // the output of the program: written from the slots, without building a `Json`
+          val w = output(penv(path))
+          (f, _) => f.out += f.record.copy(value = w(f))
         case Some(path) =>
           materializers.get(path) match
             case Some(m) => (f, _) => k(f, m(f))
@@ -135,6 +145,7 @@ final class Program(penv: Map[Path, PVal]):
         case (Some(Operand.Lit(a)), Some(Operand.Lit(b))) => Some(const(Runtime.compareOp(op, a, b)))
         case (Some(o), Some(Operand.Lit(y)))              => Some(compare(o, op, y))
         case (Some(Operand.Lit(y)), Some(o))              => Some(compare(o, op.flip, y))
+        case (Some(Operand.At(a)), Some(Operand.At(b)))   => Some(compareSlots(a, op, b))
         case _                                            => None
     case Jq.And(l, r) =>
       for a <- cond(l, in); b <- cond(r, in) yield (f, v) => a(f, v) && b(f, v)
@@ -146,6 +157,8 @@ final class Program(penv: Map[Path, PVal]):
       operand(x, in).flatMap(stringFunction(_, fn))
     case Jq.Test(Jq.Literal(_)) | Jq.StartsWith(Jq.Literal(_)) | Jq.EndsWith(Jq.Literal(_)) =>
       operand(Jq.Identity, in).flatMap(stringFunction(_, p))
+    // `.items | length > 2` is `.items | (length > 2)`: the right side on the path
+    case Jq.Pipe(x, r) if staticPath(x, in).isDefined => boolValue(r, staticPath(x, in))
     case _ => None
 
   /** The truthiness of `p`'s only output. */
@@ -154,11 +167,14 @@ final class Program(penv: Map[Path, PVal]):
       case Operand.Lit(j) => const(Runtime.truthy(j))
       case Operand.At(v)  => truthy(v)
       case Operand.Input  => (f, v) => Runtime.truthy(json(v, f))
+      case Operand.Len(v) => val l = lengthJson(v); (f, _) => Runtime.truthy(l(f))
     })
 
   private def operand(p: Jq, in: Option[Path]): Option[Operand] = p match
     case Jq.Literal(j)                => Some(Operand.Lit(j))
     case Jq.Identity if in.isEmpty    => Some(Operand.Input)
+    case Jq.Pipe(x, Jq.Length)        => staticPath(x, in).flatMap(penv.get).map(Operand.Len(_))
+    case Jq.Length                    => in.flatMap(penv.get).map(Operand.Len(_))
     case _                            => staticPath(p, in).flatMap(penv.get).map(Operand.At(_))
 
   private def const(b: Boolean): Cond = if b then (_, _) => true else (_, _) => false
@@ -168,6 +184,7 @@ final class Program(penv: Map[Path, PVal]):
     case Operand.Lit(j) => (_, _) => j
     case Operand.At(pv) => val m = materialize(pv); (f, _) => m(f)
     case Operand.Input  => (f, v) => json(v, f)
+    case Operand.Len(v) => val l = lengthJson(v); (f, _) => l(f)
 
   /** `test`, `startswith`, `endswith` with a literal argument. A string still in the payload is
     * matched as UTF-8 bytes (a prefix of the code points is a prefix of the bytes); regexes need
@@ -206,6 +223,7 @@ final class Program(penv: Map[Path, PVal]):
   /** `o op y`. */
   private def compare(o: Operand, op: CmpOp, y: Json): Cond = o match
     case Operand.At(pv) => compareSlot(pv, op, y)
+    case Operand.Len(v) => compareLength(v, op, y)
     case Operand.Lit(j) => const(Runtime.compareOp(op, j, y))
     case Operand.Input =>
       val yr = Runtime.rank(y)
@@ -282,6 +300,9 @@ final class Program(penv: Map[Path, PVal]):
         else
           val m = materialize(v)
           (f, _) => op.test(Runtime.compare(m(f), y))
+      case PSized(_, rank, whole) =>
+        if rank != Runtime.rank(y) then byRank(rank)
+        else compareSlot(whole.getOrElse(notRead(v)), op, y)
       case PFail(message) => (_, _) => throw JqError(message)
 
   private def truthy(v: PVal): Cond = v match
@@ -298,6 +319,7 @@ final class Program(penv: Map[Path, PVal]):
       (f, _) => Runtime.truthy(m(f))
     case PNumber(_, _, _) | PText(_, _) => const(true)
     case PSlice(_, _, rank)             => const(rank > Runtime.FalseRank)
+    case PSized(_, rank, _)             => const(rank > Runtime.FalseRank)
     case PFail(message)                 => (_, _) => throw JqError(message)
 
   /** The `Json` of a slot: the fallback for anything but comparisons with a literal. */
@@ -321,4 +343,183 @@ final class Program(penv: Map[Path, PVal]):
     case PNumber(_, start, len) => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
     case PText(start, len)      => f => Json.fromString(JsonCursor.unescape(f.bytes, f.int(start), f.int(len)))
     case PSlice(start, len, _)  => f => JsonCursor.parse(f.bytes, f.int(start), f.int(len))
+    case PSized(_, _, whole)    => materialize(whole.getOrElse(notRead(v)))
     case PFail(message)         => _ => throw JqError(message)
+
+  private def materializable(v: PVal): Boolean = v match
+    case PSized(_, _, None)   => false
+    case PChoice(_, branches) => branches.forall(materializable)
+    case PField(parent, _)    => materializable(parent)
+    case _                    => true
+
+  private def notRead(v: PVal): Nothing =
+    throw IllegalStateException(s"internal error: only the length of $v was read")
+
+  // ----------------------------------------------------------- comparing two paths, in place
+
+  /** `a op b`, both paths of the record: strings compared as UTF-8 bytes in place, numbers as
+    * doubles, values of different types by their rank. Anything else on their JSON views.
+    */
+  private def compareSlots(a: PVal, op: CmpOp, b: PVal): Cond =
+    (a, b) match
+      case (PStatic(x), _) => compareSlot(b, op.flip, x)
+      case (_, PStatic(y)) => compareSlot(a, op, y)
+      case (PChoice(s, bs), _) =>
+        val cs = bs.map(compareSlots(_, op, b)).toArray
+        (f, v) => cs(f.int(s))(f, v)
+      case (_, PChoice(s, bs)) =>
+        val cs = bs.map(compareSlots(a, op, _)).toArray
+        (f, v) => cs(f.int(s))(f, v)
+      case (PString(ao, al), PString(bo, bl)) =>
+        op match
+          case CmpOp.Eq  => (f, _) => utf8Equals(f.bytes, f.int(ao), f.int(al), f.int(bo), f.int(bl))
+          case CmpOp.Neq => (f, _) => !utf8Equals(f.bytes, f.int(ao), f.int(al), f.int(bo), f.int(bl))
+          case _ =>
+            (f, _) =>
+              val (x, y) = (f.int(ao), f.int(bo))
+              op.test(java.util.Arrays.compareUnsigned(f.bytes, x, x + f.int(al), f.bytes, y, y + f.int(bl)))
+      case _ =>
+        (number(a), number(b), staticRank(a), staticRank(b)) match
+          case (Some(x), Some(y), _, _)                => (f, _) => op.test(Runtime.compareDoubles(x(f), y(f)))
+          case (_, _, Some(ra), Some(rb)) if ra != rb => const(op.test(Integer.compare(ra, rb)))
+          case _ =>
+            val (x, y) = (materialize(a), materialize(b))
+            (f, _) => op.test(Runtime.compare(x(f), y(f)))
+
+  private def utf8Equals(bytes: Array[Byte], ao: Int, al: Int, bo: Int, bl: Int): Boolean =
+    al == bl && java.util.Arrays.equals(bytes, ao, ao + al, bytes, bo, bo + bl)
+
+  /** Reads a double from the frame, without boxing it (a `Frame => Double` would). */
+  private trait DoubleAt:
+    def apply(f: Frame): Double
+
+  /** Reads a long from the frame, without boxing it. */
+  private trait LongAt:
+    def apply(f: Frame): Long
+
+  /** The value of a path that is always a number, as a double. */
+  private def number(v: PVal): Option[DoubleAt] = v match
+    case PLong(s)         => Some(f => f.nums(s).toDouble)
+    case PNumber(s, _, _) => Some(f => f.double(s))
+    case _                => None
+
+  /** The rank of a path's values in jq's order, when it is always the same. */
+  private def staticRank(v: PVal): Option[Int] = v match
+    case PLong(_) | PNumber(_, _, _)            => Some(Runtime.NumberRank)
+    case PString(_, _) | PText(_, _) | PEnum(_, _) => Some(Runtime.StringRank)
+    case PJson(_, rank)                         => Some(rank)
+    case PSlice(_, _, rank)                     => Some(rank)
+    case PSized(_, rank, _)                     => Some(rank)
+    case _                                      => None
+
+  // -------------------------------------------------------------- length, without the value
+
+  /** The length of a path, when it is known without its JSON view: an array or a map counted
+    * while reading, a string from its UTF-8 bytes, null.
+    */
+  private def lengthOf(v: PVal): Option[LongAt] = v match
+    case PSized(count, _, _)           => Some(f => f.nums(count))
+    case PString(off, len)             => Some(f => codePoints(f.bytes, f.int(off), f.int(len)))
+    case PStatic(j) if j.isNull        => Some(_ => 0L)
+    case _                             => None
+
+  /** jq's `length` of a path, as a `Json`. */
+  private def lengthJson(v: PVal): Frame => Json = v match
+    case PChoice(s, bs) =>
+      val ls = bs.map(lengthJson).toArray
+      f => ls(f.int(s))(f)
+    case _ =>
+      lengthOf(v) match
+        case Some(l) => f => Json.fromLong(l(f))
+        case None    => val m = materialize(v); f => Runtime.length(m(f))
+
+  /** `length op y`. */
+  private def compareLength(v: PVal, op: CmpOp, y: Json): Cond = v match
+    case PChoice(s, bs) =>
+      val cs = bs.map(compareLength(_, op, y)).toArray
+      (f, x) => cs(f.int(s))(f, x)
+    case _ =>
+      lengthOf(v) match
+        case Some(l) if y.isNumber =>
+          val d = y.asNumber.get.toDouble
+          (f, _) => op.test(Runtime.compareDoubles(l(f).toDouble, d))
+        case Some(_) => const(op.test(Integer.compare(Runtime.NumberRank, Runtime.rank(y))))
+        case None    => val l = lengthJson(v); (f, _) => op.test(Runtime.compare(l(f), y))
+
+  /** The number of code points of UTF-8 bytes: the bytes that do not continue a sequence. */
+  private def codePoints(bytes: Array[Byte], off: Int, len: Int): Long =
+    var n = 0L
+    var i = off
+    while i < off + len do
+      if (bytes(i) & 0xc0) != 0x80 then n += 1
+      i += 1
+    n
+
+  // ------------------------------------------------------------- output, without the value
+
+  /** The bytes of a path's value emitted as the output, as `noSpaces` would write them: copied
+    * from the payload, or written from the slot, when that gives the very same bytes. Anything
+    * else through its JSON view.
+    */
+  private def output(v: PVal): Frame => Array[Byte] =
+    def viaJson: Frame => Array[Byte] =
+      val m = materialize(v)
+      f => m(f).noSpaces.getBytes(UTF_8)
+    v match
+      case PStatic(j) => val bytes = j.noSpaces.getBytes(UTF_8); _ => bytes.clone()
+      case PChoice(s, bs) =>
+        val ws = bs.map(output).toArray
+        f => ws(f.int(s))(f)
+      case PLong(s) => f => Ascii.long(f.nums(s))
+      case PBoolean(s) =>
+        val (t, e) = ("true".getBytes(UTF_8), "false".getBytes(UTF_8))
+        f => if f.nums(s) != 0 then t.clone() else e.clone()
+      case PEnum(s, symbols) =>
+        val bytes = symbols.map(sym => Json.fromString(sym).noSpaces.getBytes(UTF_8)).toArray
+        f => bytes(f.int(s)).clone()
+      case PString(off, len) =>
+        val slow = viaJson
+        f =>
+          val (o, n) = (f.int(off), f.int(len))
+          if Ascii.plain(f.bytes, o, n) then Ascii.quoted(f.bytes, o, n) else slow(f)
+      case PNumber(_, start, len) => // as written: circe keeps the text of a parsed number
+        f => java.util.Arrays.copyOfRange(f.bytes, f.int(start), f.int(start) + f.int(len))
+      case _ => viaJson
+
+/** Writing JSON output bytes directly. */
+private object Ascii:
+
+  /** Printable ASCII, no quote nor backslash: a string written as is between quotes. */
+  def plain(bytes: Array[Byte], off: Int, len: Int): Boolean =
+    var i = off
+    while i < off + len do
+      val c = bytes(i)
+      if c < 0x20 || c > 0x7e || c == '"' || c == '\\' then return false
+      i += 1
+    true
+
+  def quoted(bytes: Array[Byte], off: Int, len: Int): Array[Byte] =
+    val out = new Array[Byte](len + 2)
+    out(0) = '"'
+    System.arraycopy(bytes, off, out, 1, len)
+    out(len + 1) = '"'
+    out
+
+  /** The decimal digits of `x`, as `Long.toString` writes them. */
+  def long(x: Long): Array[Byte] =
+    if x == Long.MinValue then return x.toString.getBytes(UTF_8)
+    var v      = math.abs(x)
+    var digits = 1
+    var t      = v
+    while t >= 10 do
+      t /= 10
+      digits += 1
+    val n   = if x < 0 then digits + 1 else digits
+    val out = new Array[Byte](n)
+    var i   = n - 1
+    while i >= n - digits do
+      out(i) = ('0' + (v % 10)).toByte
+      v /= 10
+      i -= 1
+    if x < 0 then out(0) = '-'
+    out

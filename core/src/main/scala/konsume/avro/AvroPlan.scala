@@ -25,6 +25,8 @@ private[avro] object AvroPlan:
     case ReadIndex(slot: Int)
     case ReadString(off: Int, len: Int)
     case ReadJson(slot: Int, schema: Int)
+    /** the number of elements of an array or a map, skipped */
+    case ReadCount(slot: Int, schema: Int)
     case Skip(schema: Schema)
     case Branch(index: Int, branches: Vector[List[Instr]])
 
@@ -54,7 +56,10 @@ private[avro] object AvroPlan:
           val branches = schema.getTypes.asScala.toVector.map(value(_, prefix, d, needEnd))
           val env      = d.valuePaths(prefix).map(p => p -> PChoice(index, branches.map(_._2(p)))).toMap
           (List(ReadIndex(index), Branch(index, branches.map(_._1))), env)
-        case RECORD if !d.asValue => record(schema, prefix, d.children, needEnd)
+        case RECORD if !d.asValue && !d.length => record(schema, prefix, d.children, needEnd)
+        case ARRAY | MAP if d.lengthOnly => // `length`: counted, not read
+          val s = slot(SlotType.Long)
+          (List(ReadCount(s, schemaRef(schema))), Map(prefix -> PSized(s, rankOf(schema), None)))
         case _ =>
           val (instrs, v) = read(schema)
           (instrs, derived(v, prefix, d))
@@ -103,5 +108,5 @@ private[avro] object AvroPlan:
       case _                                                       => Runtime.NumberRank
 
     private def derived(v: PVal, prefix: Path, d: Demand): Map[Path, PVal] =
-      (if d.asValue then Map(prefix -> v) else Map.empty) ++
+      (if d.asValue || d.length then Map(prefix -> v) else Map.empty) ++
         d.children.flatMap((n, cd) => derived(PField(v, n), prefix :+ n, cd))

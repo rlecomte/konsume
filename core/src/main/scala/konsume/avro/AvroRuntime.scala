@@ -21,7 +21,12 @@ object AvroRuntime:
     case DOUBLE              => cur.skip(8)
     case STRING | BYTES      => cur.skip(cur.readLength())
     case FIXED               => cur.skip(schema.getFixedSize)
-    case RECORD              => schema.getFields.forEach(f => skip(cur, f.schema))
+    case RECORD =>
+      val fields = schema.getFields // no lambda: skipping must not allocate
+      var i      = 0
+      while i < fields.size do
+        skip(cur, fields.get(i).schema)
+        i += 1
     case UNION               => skip(cur, branch(cur, schema))
     case ARRAY               => blocks(cur)(skip(cur, schema.getElementType))
     case MAP                 => blocks(cur) { cur.skip(cur.readLength()); skip(cur, schema.getValueType) }
@@ -51,6 +56,14 @@ object AvroRuntime:
       val fields = Vector.newBuilder[(String, Json)]
       blocks(cur)(fields += readString(cur) -> readJson(cur, schema.getValueType))
       Json.fromFields(fields.result())
+
+  /** The number of elements of the array or map at the cursor, skipped. */
+  def count(cur: AvroCursor, schema: Schema): Long =
+    var n = 0L
+    schema.getType match
+      case ARRAY => blocks(cur) { skip(cur, schema.getElementType); n += 1 }
+      case _     => blocks(cur) { cur.skip(cur.readLength()); skip(cur, schema.getValueType); n += 1 }
+    n
 
   def readString(cur: AvroCursor): String =
     val n = cur.readLength()

@@ -76,7 +76,8 @@ object AvroPlanned:
         f.nums(off) = cur.pos
         f.nums(len) = n
         cur.skip(n)
-    case ReadJson(s, k) => val schema = schemas(k); (cur, f) => f.refs(s) = AvroRuntime.readJson(cur, schema)
+    case ReadJson(s, k)  => val schema = schemas(k); (cur, f) => f.refs(s) = AvroRuntime.readJson(cur, schema)
+    case ReadCount(s, k) => val schema = schemas(k); (cur, f) => f.nums(s) = AvroRuntime.count(cur, schema)
     case Skip(schema)   => skip(schema)
     case Branch(s, bs) =>
       val branches = bs.map(steps(_, schemas)).toArray

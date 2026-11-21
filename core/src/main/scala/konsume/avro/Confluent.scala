@@ -12,7 +12,8 @@ object Confluent:
   def schemaId(bytes: Array[Byte]): Int =
     if bytes == null || bytes.length < HeaderSize then throw DecodeError("too short for the Confluent wire format")
     if bytes(0) != MagicByte then throw DecodeError(s"unknown magic byte ${bytes(0)}")
-    ByteBuffer.wrap(bytes, 1, 4).getInt
+    // big endian, without a ByteBuffer: called on every record
+    (bytes(1) & 0xff) << 24 | (bytes(2) & 0xff) << 16 | (bytes(3) & 0xff) << 8 | (bytes(4) & 0xff)
 
   /** Schema ids used in a batch: what the consumer must fetch from the registry before
     * running the (pure) pipeline on it.

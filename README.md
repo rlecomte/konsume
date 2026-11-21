@@ -52,7 +52,9 @@ from an older schema is `null`.
   `Demand` finds the paths a program uses on its syntax tree; a format reader fills the slots of
   a `Frame` and describes what it found (`PVal`); `Program` turns the program into closures once,
   with comparisons specialised on that (strings compared as UTF-8 bytes in place, `startswith`
-  and `endswith` too, union branches and JSON kinds resolved by their index). One frame per
+  and `endswith` too, union branches and JSON kinds resolved by their index), two paths
+  compared in place, `length` of an array counted while reading, and a path emitted as the
+  output written from the payload, byte for byte what the reference writes. One frame per
   thread, reused: running a program allocates nothing of its own. Building a program takes well
   under a millisecond.
 - `avro/`: Confluent framing, the Avro cursor, the reference decoder (`AvroDecoder`, then
@@ -81,19 +83,25 @@ faster, but with a compiler in memory and a heap leak. What was measured and lea
 
 ## Benchmark
 
-`sbt 'bench/Jmh/run -prof gc konsume.bench.AvroEnginesBench'`: 10k Avro records (~19 bytes), JDK
-25, µs per batch (bytes allocated per record).
+`sbt 'bench/Jmh/run -prof gc konsume.bench.ShapesBench'`: one program per shape, the same 10k
+events in Avro (~19 bytes) and JSON (~65 bytes), JDK 25, µs per batch (bytes allocated per
+record). An output other than the record unchanged costs ~75 bytes whatever the engine (a new
+`Record` and its value).
 
-| program                                            | planned        | interpreted     |
-|----------------------------------------------------|---------------:|----------------:|
-| `select(.user.age > 30 and .user.country == "FR")` | **348** (1.6)  | 3 047 (2 139)   |
-| `select(.name \| test("^jo"))`                     | **464** (220)  | 3 507 (2 702)   |
-| `.user.country`                                    | **561** (265)  | 2 888 (2 268)   |
-| `.items[] \| select(. > 50)`                       | **940** (493)  | 3 501 (2 488)   |
+| program                                            | Avro planned   | Avro interpreted | JSON planned    | JSON interpreted |
+|----------------------------------------------------|---------------:|-----------------:|----------------:|-----------------:|
+| `select(.user.age > 30 and .user.country == "FR")` | **336** (1.7)  | 3 014 (2 251)    | **1 391** (1.7) | 3 075 (2 033)    |
+| `select(.name \| test("^jo"))`                     | **439** (192)  | 3 222 (2 662)    | **1 392** (224) | 3 697 (2 489)    |
+| `select(.name == .user.country)`                   | **318** (0)    | 2 656 (2 031)    | **1 303** (0)   | 2 952 (1 886)    |
+| `select(.items \| length > 2)`                     | **517** (3)    | 2 476 (2 011)    | **1 214** (3)   | 2 873 (1 909)    |
+| `.user.country`                                    | **310** (85)   | 2 525 (2 156)    | **1 263** (85)  | 3 015 (2 095)    |
+| `.user.age`                                        | **279** (85)   | 2 799 (2 124)    | **1 192** (85)  | 3 024 (2 099)    |
+| `select(.user.age > 30) \| .name`                  | **294** (52)   | 3 174 (2 269)    | **1 335** (52)  | 3 866 (2 111)    |
+| `.user`                                            | **1 705** (843) | 3 936 (2 458)   | **3 385** (1 115) | 3 870 (2 245)  |
+| `.items[0]`                                        | **1 047** (522) | 2 807 (2 226)   | **2 152** (854) | 3 035 (2 089)    |
+| `.items[] \| select(. > 50)`                       | **968** (509)  | 3 583 (2 537)    | **2 299** (911) | 3 462 (2 324)    |
 
-`sbt 'bench/Jmh/run -prof gc konsume.bench.DecodeBench'`, JSON, same filter as the first line,
-10k records (~65 bytes): planned **1 404 µs (1.6 bytes per record)**, decoded with circe then
-interpreted 3 097 µs (2 033 bytes per record).
+The last three still build the JSON view of a whole record or array.
 
 `MemoryProbe` (bench) reports the memory an engine keeps: with 1 000 distinct programs alive,
 the planned engine keeps ~1 KiB of heap each and loads no class.

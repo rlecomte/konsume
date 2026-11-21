@@ -55,7 +55,8 @@ object JsonPlanned:
   // ------------------------------------------------------------------------- the paths read
 
   /** A path the program uses, and the slots holding what the scan found there: its kind always,
-    * its number and position only when the program uses the value itself.
+    * its number and position only when the program uses the value itself (or its length), the
+    * number of elements of an array when it uses its length.
     */
   private final class Node(
       val asValue: Boolean,
@@ -63,6 +64,8 @@ object JsonPlanned:
       val number: Int,
       val start: Int,
       val len: Int,
+      val count: Int,
+      val lengthOnly: Boolean,
       val children: Array[Child]
   ):
     /** The kinds of everything below: forgotten when the key is seen again. */
@@ -71,10 +74,12 @@ object JsonPlanned:
   private final class Child(val name: String, val utf8: Array[Byte], val node: Node)
 
   private def node(d: Demand, slot: () => Int): Node =
+    val asValue              = d.asValue || d.length
     val kind                 = slot()
-    val (number, start, len) = if d.asValue then (slot(), slot(), slot()) else (-1, -1, -1)
+    val (number, start, len) = if asValue then (slot(), slot(), slot()) else (-1, -1, -1)
+    val count                = if d.length then slot() else -1
     val children             = d.children.toArray.map((name, cd) => Child(name, name.getBytes(UTF_8), node(cd, slot)))
-    Node(d.asValue, kind, number, start, len, children)
+    Node(asValue, kind, number, start, len, count, d.lengthOnly, children)
 
   // ------------------------------------------------------------------------------ scanning
 
@@ -105,7 +110,8 @@ object JsonPlanned:
       if cur.escaped then f.nums(n.kind) = JsonCursor.EscapedString
     else
       val start = cur.pos
-      cur.skipValue()
+      if k == JsonCursor.Array && n.count >= 0 then f.nums(n.count) = cur.countArray()
+      else cur.skipValue()
       f.nums(n.start) = start
       f.nums(n.len) = cur.pos - start
 
@@ -139,7 +145,8 @@ object JsonPlanned:
               PNumber(n.number, n.start, n.len),
               PString(n.start, n.len),
               PText(n.start, n.len),
-              PSlice(n.start, n.len, Runtime.ArrayRank),
+              if n.count >= 0 then PSized(n.count, Runtime.ArrayRank, Option.unless(n.lengthOnly)(PSlice(n.start, n.len, Runtime.ArrayRank)))
+              else PSlice(n.start, n.len, Runtime.ArrayRank),
               PSlice(n.start, n.len, Runtime.ObjectRank)
             )
           )

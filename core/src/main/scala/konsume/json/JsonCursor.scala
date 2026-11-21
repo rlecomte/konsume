@@ -150,6 +150,26 @@ final class JsonCursor(var bytes: Array[Byte], var pos: Int):
     skipWs()
     if pos != bytes.length then fail("trailing characters")
 
+  /** At '[': skips (and validates) the array, returns its number of elements. */
+  def countArray(): Long =
+    pos += 1
+    skipWs()
+    if bytes(pos) == ']' then
+      pos += 1
+      0L
+    else
+      var n    = 0L
+      var more = true
+      while more do
+        skipValue()
+        n += 1
+        skipWs()
+        bytes(pos) match
+          case ',' => pos += 1
+          case ']' => pos += 1; more = false
+          case c   => fail(s"unexpected '${c.toChar}'")
+      n
+
   /** Skips (and validates) the value at the cursor. Iterative: no stack overflow on deep input. */
   def skipValue(): Unit =
     var depth = 0
