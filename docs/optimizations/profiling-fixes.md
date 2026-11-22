@@ -63,7 +63,7 @@ The same kind of profile (`bench/profile.sh filter Json`) showed `Arrays.fill` a
 the kinds below the root object to null again. Resetting only the kind slots, once, removed
 `Arrays.fill` from the profile, but a profile after the change put about as much time in the loop
 that replaced it, and `bench/compare.sh` (`20261121-2244-b1e6163-dirty` →
-`20261122-1558-d4ec69f-dirty`, result committed) showed no gain beyond the noise on JSON
+`20261122-1558-d4ec69f-dirty-undone`, result committed) showed no gain beyond the noise on JSON
 (-13 % to +6 %). Undone: a few more lines and a parameter for nothing measurable. The self time
 of a short intrinsic (`Arrays.fill` on twenty longs) in a sampled profile is not what removing it
 saves.

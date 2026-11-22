@@ -27,6 +27,9 @@ bench/compare.sh                       # the two most recent results
 bench/compare.sh before.json after.json
 ```
 
+Results whose name ends in `-undone.json` are left out of the default: they measure a change
+that was tried and undone, kept for the record but not a reference for the next change.
+
 One line per program and format, before and after. Marked:
 
 - `SLOWER`: slower by more than 10 % and by more than both error margins together (`faster`
@@ -53,3 +56,5 @@ jawn code are counted, not JMH's.
 2. After it: `bench/run.sh`, then `bench/compare.sh`.
 3. Commit the new result with the change. A regression is fixed, or explained in the commit
    message.
+4. A change undone (no gain, or not worth its code): its result is committed all the same,
+   renamed `...-undone.json`, with a note of what was tried in `docs/optimizations`.
