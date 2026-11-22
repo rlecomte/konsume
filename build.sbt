@@ -6,7 +6,7 @@ ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature", "-Wunused:all")
 val circeVersion = "0.14.15"
 
 lazy val root = (project in file("."))
-  .aggregate(core, bench)
+  .aggregate(core, bench, buildYourOwn)
   .settings(publish / skip := true)
 
 lazy val core = (project in file("core"))
@@ -24,3 +24,12 @@ lazy val bench = (project in file("bench"))
   .dependsOn(core)
   .enablePlugins(JmhPlugin)
   .settings(publish / skip := true)
+
+/** A small konsume, built chapter by chapter to understand the real one: see
+  * build-your-own/README.md. Depends on nothing.
+  */
+lazy val buildYourOwn = (project in file("build-your-own"))
+  .settings(
+    publish / skip := true,
+    libraryDependencies += "org.scalameta" %% "munit" % "1.2.4" % Test
+  )

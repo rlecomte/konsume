@@ -45,6 +45,10 @@ from an older schema is `null`.
 
 ## How it works
 
+New to the code? [build-your-own/](build-your-own/README.md) builds a small konsume with the
+same core ideas (parser, interpreter, demand, reading plan, closures, outputs) in about 500
+lines, on a tiny jq and a tiny Avro, then maps each one to the files below.
+
 - `jq/Parser`: jq subset → `Jq` AST.
 - `jq/Interpreter`: tree-walking interpreter, the reference semantics (`Engine.Interpreted`).
 - `jq/Runtime`: jq semantics shared by both engines.
