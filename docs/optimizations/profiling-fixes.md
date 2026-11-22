@@ -56,7 +56,20 @@ Measured (`bench/compare.sh`, results `20261121-2233-e75eaf9` → `20261121-2244
 every Avro program 15 to 27 % faster (`.items[] | select(. > 50)`: 717 → 525 µs, `.user`: 517 →
 435 µs); JSON within the noise.
 
+## Tried, no gain: resetting only the kinds in JSON
+
+The same kind of profile (`bench/profile.sh filter Json`) showed `Arrays.fill` at 11 % and
+`forgetBelow` at 5 %: each JSON record starts by setting all the slots of the frame to 0, then
+the kinds below the root object to null again. Resetting only the kind slots, once, removed
+`Arrays.fill` from the profile, but a profile after the change put about as much time in the loop
+that replaced it, and `bench/compare.sh` (`20261121-2244-b1e6163-dirty` →
+`20261122-1558-d4ec69f-dirty`, result committed) showed no gain beyond the noise on JSON
+(-13 % to +6 %). Undone: a few more lines and a parameter for nothing measurable. The self time
+of a short intrinsic (`Arrays.fill` on twenty longs) in a sampled profile is not what removing it
+saves.
+
 ## Lesson
 
 When an allocation does not match what the code should do, profile before guessing: the cause was
-in code written long before, and its cost depended on the JIT.
+in code written long before, and its cost depended on the JIT. And measure the change itself: a
+profile says where time is spent, not how much a change will save.
